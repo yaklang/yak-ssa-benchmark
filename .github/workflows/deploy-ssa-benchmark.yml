@@ -16,7 +16,7 @@ jobs:
     env:
       APP_NAME: ssa-benchmark
       APP_PATH: apps/ssa-benchmark
-      REPORT_VIEWER_SCRIPT: report-viewer.yak
+      REPORT_VIEWER_SCRIPT: report_viewer.yak
       REPORT_VIEWER_SERVICE_NAME: yak-ssa-benchmark-report-viewer
       AUTO_RUNNER_SERVICE_NAME: ssa-benchmark-auto-runner
       AUTO_RUNNER_TIMER_NAME: ssa-benchmark-auto-runner.timer
@@ -131,10 +131,28 @@ jobs:
           echo "目标服务器: [已隐藏]"
           echo "应用: ${{ env.APP_NAME }}"
           
-          # 创建远程目录
+          # 清理旧的应用目录，保留报告数据
           echo ""
-          echo "创建远程目录..."
-          ./yak ssh -H "$SSH_HOST" -i /tmp/deploy_pri --command "mkdir -p ${{ env.WORK_DIR }}/{${{ env.APP_PATH }},scripts} && mkdir -p ${{ env.REPORT_DIR }}"
+          echo "清理旧的应用目录..."
+          ./yak ssh -H "$SSH_HOST" -i /tmp/deploy_pri --command "
+            # 保留报告数据目录
+            if [ -d ${{ env.REPORT_DIR }} ]; then
+              echo '✓ 报告目录已存在，将保留'
+            else
+              mkdir -p ${{ env.REPORT_DIR }}
+              echo '✓ 创建报告目录'
+            fi
+            
+            # 删除整个应用目录
+            if [ -d ${{ env.WORK_DIR }} ]; then
+              rm -rf ${{ env.WORK_DIR }}
+              echo '🗑️ 删除旧的应用目录: ${{ env.WORK_DIR }}'
+            fi
+            
+            # 重新创建应用目录结构
+            mkdir -p ${{ env.WORK_DIR }}/{${{ env.APP_PATH }},scripts,apps}
+            echo '✓ 创建新的应用目录'
+          "
           
           # 准备待上传的文件
           echo ""
@@ -225,9 +243,16 @@ jobs:
           ./yak ssh -H "$SSH_HOST" -i /tmp/deploy_pri --command "mv /root/ssa-benchmark-deploy/configs/benchmark-config.env ${{ env.WORK_DIR }}/${{ env.APP_PATH }}/.env.benchmark"
           ./yak ssh -H "$SSH_HOST" -i /tmp/deploy_pri --command "mv /root/ssa-benchmark-deploy/configs/report-viewer-config.env ${{ env.WORK_DIR }}/${{ env.APP_PATH }}/.env.report-viewer"
           
-          # 部署项目配置目录（仅当存在时）
+          # 部署项目配置目录
           echo "部署项目配置目录..."
-          ./yak ssh -H "$SSH_HOST" -i /tmp/deploy_pri --command "if [ -d /root/ssa-benchmark-deploy/project-configs ] && [ \"\$(ls -A /root/ssa-benchmark-deploy/project-configs 2>/dev/null)\" ]; then mkdir -p ${{ env.WORK_DIR }}/${{ env.APP_PATH }}/configs && cp -r /root/ssa-benchmark-deploy/project-configs/* ${{ env.WORK_DIR }}/${{ env.APP_PATH }}/configs/ && echo '✓ 项目配置目录已部署'; else echo '⚠ 项目配置目录为空，跳过'; fi"
+          ./yak ssh -H "$SSH_HOST" -i /tmp/deploy_pri --command "
+            if [ -d /root/ssa-benchmark-deploy/project-configs ] && [ \"\$(ls -A /root/ssa-benchmark-deploy/project-configs 2>/dev/null)\" ]; then
+              cp -r /root/ssa-benchmark-deploy/project-configs ${{ env.WORK_DIR }}/${{ env.APP_PATH }}/configs
+              echo '✓ 项目配置目录已部署'
+            else
+              echo '⚠ 项目配置目录为空，跳过'
+            fi
+          "
           
           # 清理服务器上的临时文件
           echo ""

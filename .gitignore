@@ -16,8 +16,8 @@ Thumbs.db
 *-scan-result.json
 *-comparison-*.json
 
-# Keep baseline files but ignore them in example projects
-apps/ssa-benchmark/configs/example-project/baseline.json
+# Baseline files (generated automatically on first run, protect from overwrite)
+apps/ssa-benchmark/configs/*/baseline.json
 
 # Keep the baseline schema
 !apps/ssa-benchmark/comparison-report.schema.json
