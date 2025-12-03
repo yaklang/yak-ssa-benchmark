@@ -134,25 +134,7 @@ jobs:
           # 清理旧的应用目录，保留报告数据
           echo ""
           echo "清理旧的应用目录..."
-          ./yak ssh -H "$SSH_HOST" -i /tmp/deploy_pri --command "
-            # 保留报告数据目录
-            if [ -d ${{ env.REPORT_DIR }} ]; then
-              echo '✓ 报告目录已存在，将保留'
-            else
-              mkdir -p ${{ env.REPORT_DIR }}
-              echo '✓ 创建报告目录'
-            fi
-            
-            # 删除整个应用目录
-            if [ -d ${{ env.WORK_DIR }} ]; then
-              rm -rf ${{ env.WORK_DIR }}
-              echo '🗑️ 删除旧的应用目录: ${{ env.WORK_DIR }}'
-            fi
-            
-            # 重新创建应用目录结构
-            mkdir -p ${{ env.WORK_DIR }}/{${{ env.APP_PATH }},scripts,apps}
-            echo '✓ 创建新的应用目录'
-          "
+          ./yak ssh -H "$SSH_HOST" -i /tmp/deploy_pri --command "if [ -d ${{ env.REPORT_DIR }} ]; then echo 'Report directory exists, keeping it'; else mkdir -p ${{ env.REPORT_DIR }} && echo 'Created report directory'; fi && if [ -d ${{ env.WORK_DIR }} ]; then rm -rf ${{ env.WORK_DIR }} && echo 'Deleted old application directory: ${{ env.WORK_DIR }}'; fi && mkdir -p ${{ env.WORK_DIR }}/{${{ env.APP_PATH }},scripts,apps} && echo 'Created new application directory'"
           
           # 准备待上传的文件
           echo ""
@@ -245,14 +227,7 @@ jobs:
           
           # 部署项目配置目录
           echo "部署项目配置目录..."
-          ./yak ssh -H "$SSH_HOST" -i /tmp/deploy_pri --command "
-            if [ -d /root/ssa-benchmark-deploy/project-configs ] && [ \"\$(ls -A /root/ssa-benchmark-deploy/project-configs 2>/dev/null)\" ]; then
-              cp -r /root/ssa-benchmark-deploy/project-configs ${{ env.WORK_DIR }}/${{ env.APP_PATH }}/configs
-              echo '✓ 项目配置目录已部署'
-            else
-              echo '⚠ 项目配置目录为空，跳过'
-            fi
-          "
+          ./yak ssh -H "$SSH_HOST" -i /tmp/deploy_pri --command "if [ -d /root/ssa-benchmark-deploy/project-configs ] && [ \"\$(ls -A /root/ssa-benchmark-deploy/project-configs 2>/dev/null)\" ]; then cp -r /root/ssa-benchmark-deploy/project-configs ${{ env.WORK_DIR }}/${{ env.APP_PATH }}/configs && echo 'Project configs deployed'; else echo 'Project configs directory is empty, skipping'; fi"
           
           # 清理服务器上的临时文件
           echo ""
