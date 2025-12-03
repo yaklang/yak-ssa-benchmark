@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SSA Baseline Report Viewer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', sans-serif;
+            background: #f5f5f5;
+            color: #333333;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        header p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .reports-section {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #667eea;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        thead {
+            background: #f3f4f6;
+        }
+
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        th {
+            font-weight: 600;
+            color: #374151;
+        }
+
+        tr:hover {
+            background: #f9fafb;
+        }
+
+        .badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .badge-success {
+            background: #22c55e;
+            color: white;
+        }
+
+        .badge-failed {
+            background: #ef4444;
+            color: white;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            overflow: auto;
+        }
+
+        .modal-content {
+            max-width: 1200px;
+            margin: 50px auto;
+            background: white;
+            border-radius: 10px;
+            padding: 30px;
+            position: relative;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .modal-close {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: #ef4444;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+            background: #f3f4f6;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .comparison-item {
+            background: white;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 10px;
+        }
+
+        .comparison-pass {
+            border-left: 4px solid #22c55e;
+        }
+
+        .comparison-fail {
+            border-left: 4px solid #ef4444;
+        }
+
+        .risk-list {
+            max-height: 300px;
+            overflow-y: auto;
+            background: #f9fafb;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+
+        .risk-detail {
+            font-size: 12px;
+            color: #666;
+            padding: 8px;
+            background: white;
+            border-radius: 4px;
+            margin-bottom: 6px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+
+        .error {
+            text-align: center;
+            padding: 40px;
+            color: #ef4444;
+        }
+
+        code {
+            background: #f3f4f6;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📊 SSA Baseline Report Viewer</h1>
+            <p>查看和分析SSA基线对比报告</p>
+        </header>
+
+        <div class="reports-section">
+            <h2 class="section-title">对比报告列表</h2>
+            
+            <div style="margin-bottom: 20px; display: flex; gap: 10px; align-items: center;">
+                <button class="btn btn-primary" onclick="refreshAll()">
+                    <span>🔄</span>
+                    <span>刷新</span>
+                </button>
+                <div style="flex: 1;"></div>
+                <div style="color: #666; font-size: 14px;">
+                    总报告数: <strong id="totalReports">0</strong>
+                </div>
+            </div>
+            
+            <div id="reportsContainer">
+                <div class="loading">
+                    <p>加载报告中...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Report Detail Modal -->
+        <div id="reportModal" class="modal">
+            <div class="modal-content">
+                <button class="modal-close" onclick="closeReportModal()">✕ 关闭</button>
+                <div id="reportDetailContent"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Load data on page load
+        window.addEventListener('DOMContentLoaded', () => {
+            loadReports();
+        });
+
+        // Load reports list
+        function loadReports() {
+            const container = document.getElementById('reportsContainer');
+            container.innerHTML = '<div class="loading"><p>加载报告中...</p></div>';
+
+            fetch('/api/reports')
+                .then(response => response.json())
+                .then(data => {
+                    if (!data.success) {
+                        container.innerHTML = `<div class="error"><p>${data.message}</p></div>`;
+                        return;
+                    }
+
+                    document.getElementById('totalReports').textContent = data.count;
+
+                    if (data.reports.length === 0) {
+                        container.innerHTML = '<div class="loading"><p>未找到报告文件</p></div>';
+                        return;
+                    }
+
+                    // Build reports table
+                    let html = `
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>生成时间</th>
+                                    <th style="text-align: center;">总体结果</th>
+                                    <th style="text-align: center;">基线风险数</th>
+                                    <th style="text-align: center;">当前风险数</th>
+                                    <th style="text-align: center;">通过/失败</th>
+                                    <th style="text-align: center;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                    `;
+
+                    data.reports.forEach(report => {
+                        const passBadge = report.overall_pass ? 
+                            '<span class="badge badge-success">✓ 通过</span>' :
+                            '<span class="badge badge-failed">✗ 失败</span>';
+
+                        html += `
+                            <tr>
+                                <td>${report.generated_at || '-'}</td>
+                                <td style="text-align: center;">${passBadge}</td>
+                                <td style="text-align: center;">${report.baseline_total || 0}</td>
+                                <td style="text-align: center;">${report.current_total || 0}</td>
+                                <td style="text-align: center;">
+                                    <span style="color: #22c55e;">${report.passed_comparisons || 0}</span> / 
+                                    <span style="color: #ef4444;">${report.failed_comparisons || 0}</span>
+                                </td>
+                                <td style="text-align: center;">
+                                    <button onclick="viewReport('${report.filename}')" class="btn btn-primary" style="padding: 6px 12px; font-size: 12px;">查看详情</button>
+                                </td>
+                            </tr>
+                        `;
+                    });
+
+                    html += '</tbody></table>';
+                    container.innerHTML = html;
+                })
+                .catch(error => {
+                    console.error('Failed to load reports:', error);
+                    container.innerHTML = `<div class="error"><p>加载报告失败: ${error.message}</p></div>`;
+                });
+        }
+
+        // View report detail
+        function viewReport(filename) {
+            const modal = document.getElementById('reportModal');
+            const content = document.getElementById('reportDetailContent');
+            
+            content.innerHTML = '<div class="loading"><p>加载报告详情中...</p></div>';
+            modal.style.display = 'block';
+
+            fetch(`/api/report?filename=${encodeURIComponent(filename)}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (!data.success) {
+                        content.innerHTML = `<div class="error"><p>错误: ${data.message}</p></div>`;
+                        return;
+                    }
+
+                    const report = data.report;
+                    
+                    // 根据 Schema，overall_pass 在 summary 中
+                    const overallPass = report.summary && report.summary.overall_pass !== undefined ? report.summary.overall_pass : false;
+                    
+                    let html = `
+                        <h2 style="margin-bottom: 20px; color: #667eea;">📄 ${overallPass ? '✓' : '✗'} 对比报告详情</h2>
+                        
+                        <div class="info-grid">
+                            <div><strong>报告类型:</strong> ${report.report_type || '-'}</div>
+                            <div><strong>生成时间:</strong> ${report.generated_at || '-'}</div>
+                            <div><strong>基线报告时间:</strong> ${report.baseline_info.report_time || '-'}</div>
+                            <div><strong>当前报告时间:</strong> ${report.current_info.report_time || '-'}</div>
+                            <div><strong>程序名称:</strong> ${report.baseline_info.program_name || '-'}</div>
+                            <div><strong>程序语言:</strong> ${report.baseline_info.program_lang || '-'}</div>
+                            <div><strong>总体结果:</strong> ${overallPass ? '<span style="color: #22c55e;">✓ 通过</span>' : '<span style="color: #ef4444;">✗ 失败</span>'}</div>
+                            <div><strong>对比项:</strong> 通过 ${report.summary.passed_comparisons || 0} / 失败 ${report.summary.failed_comparisons || 0}</div>
+                        </div>
+
+                        <h3 style="margin: 20px 0 10px 0; color: #667eea;">基线统计</h3>
+                        <div style="background: #f9fafb; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                            <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; text-align: center;">
+                                <div><strong>总计:</strong> ${report.baseline_info.summary.total}</div>
+                                <div style="color: #dc2626;"><strong>严重:</strong> ${report.baseline_info.summary.critical}</div>
+                                <div style="color: #f59e0b;"><strong>高危:</strong> ${report.baseline_info.summary.high}</div>
+                                <div style="color: #3b82f6;"><strong>中危:</strong> ${report.baseline_info.summary.medium}</div>
+                                <div style="color: #6b7280;"><strong>低危:</strong> ${report.baseline_info.summary.low}</div>
+                            </div>
+                        </div>
+
+                        <h3 style="margin: 20px 0 10px 0; color: #667eea;">当前统计</h3>
+                        <div style="background: #f9fafb; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                            <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; text-align: center;">
+                                <div><strong>总计:</strong> ${report.current_info.summary.total}</div>
+                                <div style="color: #dc2626;"><strong>严重:</strong> ${report.current_info.summary.critical}</div>
+                                <div style="color: #f59e0b;"><strong>高危:</strong> ${report.current_info.summary.high}</div>
+                                <div style="color: #3b82f6;"><strong>中危:</strong> ${report.current_info.summary.medium}</div>
+                                <div style="color: #6b7280;"><strong>低危:</strong> ${report.current_info.summary.low}</div>
+                            </div>
+                        </div>
+
+                        <h3 style="margin: 20px 0 10px 0; color: #667eea;">📊 各级别详细对比</h3>
+                    `;
+
+                    // 根据 Schema，字段名是 comparisons 而不是 comparison_results
+                    const comparisons = report.comparisons || [];
+                    
+                    if (comparisons.length > 0) {
+                        // 定义严重级别的颜色和图标
+                        const severityConfig = {
+                            'critical': { color: '#dc2626', icon: '🔴', label: '严重' },
+                            'high': { color: '#f59e0b', icon: '🟠', label: '高危' },
+                            'medium': { color: '#3b82f6', icon: '🟡', label: '中危' },
+                            'low': { color: '#6b7280', icon: '⚪', label: '低危' },
+                            'info': { color: '#9ca3af', icon: '⚪', label: '信息' }
+                        };
+
+                        comparisons.forEach((comp, index) => {
+                            const compClass = comp.pass ? 'comparison-pass' : 'comparison-fail';
+                            const statusBadge = comp.pass ? 
+                                '<span class="badge badge-success">✓ 通过</span>' : 
+                                '<span class="badge badge-failed">✗ 失败</span>';
+                            
+                            const config = severityConfig[comp.severity] || severityConfig['info'];
+                            const diff = comp.current_count - comp.baseline_count;
+                            let diffIndicator;
+                            if (diff > 0) {
+                                diffIndicator = `<span style="color: #ef4444;">+${diff}</span>`;
+                            } else if (diff < 0) {
+                                diffIndicator = `<span style="color: #22c55e;">${diff}</span>`;
+                            } else {
+                                diffIndicator = `<span style="color: #6b7280;">0</span>`;
+                            }
+                            
+                            html += `
+                                <div class="comparison-item ${compClass}" style="border-left-color: ${config.color}; border-left-width: 5px;">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                                        <h4 style="margin: 0; text-transform: uppercase; color: ${config.color};">
+                                            ${config.icon} ${config.label} (${comp.severity.toUpperCase()})
+                                        </h4>
+                                        ${statusBadge}
+                                    </div>
+                                    
+                                    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; background: #f9fafb; padding: 10px; border-radius: 6px; margin-bottom: 10px;">
+                                        <div style="text-align: center;">
+                                            <div style="font-size: 11px; color: #6b7280;">基线</div>
+                                            <div style="font-size: 20px; font-weight: bold; color: ${config.color};">${comp.baseline_count}</div>
+                                        </div>
+                                        <div style="text-align: center;">
+                                            <div style="font-size: 11px; color: #6b7280;">当前</div>
+                                            <div style="font-size: 20px; font-weight: bold; color: ${config.color};">${comp.current_count}</div>
+                                        </div>
+                                        <div style="text-align: center;">
+                                            <div style="font-size: 11px; color: #6b7280;">差异</div>
+                                            <div style="font-size: 18px; font-weight: bold;">${diffIndicator}</div>
+                                        </div>
+                                        <div style="text-align: center;">
+                                            <div style="font-size: 11px; color: #6b7280;">匹配</div>
+                                            <div style="font-size: 20px; font-weight: bold; color: #22c55e;">${comp.matched_count}</div>
+                                        </div>
+                                    </div>
+                            `;
+
+                            // 显示缺失的风险 (基线有但当前没有 - 可能已修复)
+                            const missingCount = comp.missing_count || (comp.missing ? comp.missing.length : 0);
+                            if (missingCount > 0) {
+                                html += `
+                                    <div style="margin-top: 15px; padding: 10px; background: #fef2f2; border-left: 3px solid #ef4444; border-radius: 4px;">
+                                        <strong style="color: #ef4444; font-size: 14px;">❌ 缺失的风险 (${missingCount}个) - 基线中存在但当前扫描缺失</strong>
+                                `;
+                                if (comp.missing && comp.missing.length > 0) {
+                                    html += '<div class="risk-list" style="margin-top: 10px;">';
+                                    comp.missing.forEach(risk => {
+                                        html += `
+                                            <div class="risk-detail" style="background: white;">
+                                                <div><strong style="color: #dc2626;">${risk.title}</strong></div>
+                                                <div style="margin-top: 4px;"><strong>文件:</strong> <code>${risk.file}</code></div>
+                                                <div><strong>行号:</strong> ${risk.line}</div>
+                                                <div><strong>规则:</strong> ${risk.rule_name}</div>
+                                                <div style="font-size: 11px; color: #9ca3af; margin-top: 4px;">特征哈希: ${risk.feature_hash}</div>
+                                            </div>
+                                        `;
+                                    });
+                                    html += '</div>';
+                                }
+                                html += '</div>';
+                            }
+
+                            // 显示新增的风险 (当前有但基线没有 - 可能是新引入的问题)
+                            const newCount = comp.new_count || (comp.new ? comp.new.length : 0);
+                            if (newCount > 0) {
+                                html += `
+                                    <div style="margin-top: 15px; padding: 10px; background: #eff6ff; border-left: 3px solid #3b82f6; border-radius: 4px;">
+                                        <strong style="color: #3b82f6; font-size: 14px;">➕ 新增的风险 (${newCount}个) - 当前扫描新发现</strong>
+                                `;
+                                if (comp.new && comp.new.length > 0) {
+                                    html += '<div class="risk-list" style="margin-top: 10px;">';
+                                    comp.new.forEach(risk => {
+                                        html += `
+                                            <div class="risk-detail" style="background: white;">
+                                                <div><strong style="color: #2563eb;">${risk.title}</strong></div>
+                                                <div style="margin-top: 4px;"><strong>文件:</strong> <code>${risk.file}</code></div>
+                                                <div><strong>行号:</strong> ${risk.line}</div>
+                                                <div><strong>规则:</strong> ${risk.rule_name}</div>
+                                                <div style="font-size: 11px; color: #9ca3af; margin-top: 4px;">特征哈希: ${risk.feature_hash}</div>
+                                            </div>
+                                        `;
+                                    });
+                                    html += '</div>';
+                                }
+                                html += '</div>';
+                            }
+
+                            // 匹配的风险只显示统计,不显示详情(避免冗余)
+                            if (comp.matched_count > 0) {
+                                html += `
+                                    <div style="margin-top: 15px; padding: 10px; background: #f0fdf4; border-left: 3px solid #22c55e; border-radius: 4px;">
+                                        <strong style="color: #22c55e; font-size: 14px;">✓ 匹配的风险 (${comp.matched_count}个)</strong>
+                                        <div style="color: #6b7280; font-size: 13px; margin-top: 5px;">这些风险在基线和当前扫描中都存在且特征相同,无需重点关注</div>
+                                    </div>
+                                `;
+                            }
+
+                            html += '</div></div>';
+                        });
+                    }
+
+                    content.innerHTML = html;
+                })
+                .catch(error => {
+                    console.error('Failed to load report:', error);
+                    content.innerHTML = `<div class="error"><p>加载报告失败: ${error.message}</p></div>`;
+                });
+        }
+
+        // Close report modal
+        function closeReportModal() {
+            document.getElementById('reportModal').style.display = 'none';
+        }
+
+        // Refresh all data
+        function refreshAll() {
+            loadReports();
+        }
+
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            const modal = document.getElementById('reportModal');
+            if (event.target == modal) {
+                modal.style.display = 'none';
+            }
+        }
+    </script>
+</body>
+</html>

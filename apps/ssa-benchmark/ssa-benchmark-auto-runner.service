@@ -1,0 +1,29 @@
+[Unit]
+Description=SSA Benchmark Auto Runner Service
+Documentation=https://github.com/yaklang/yak-ssa-benchmark
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+
+# 工作目录
+WorkingDirectory=/root/yak-ssa-benchmark
+
+# 执行脚本
+ExecStart=/bin/bash /root/yak-ssa-benchmark/apps/ssa-benchmark/auto-benchmark.sh
+
+# 超时设置（最长运行 30 分钟）
+TimeoutStartSec=7200
+
+# 日志配置
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ssa-benchmark-auto-runner
+
+# 重启策略（失败时不重启，由 timer 控制执行周期）
+Restart=no
+
+[Install]
+WantedBy=multi-user.target
+

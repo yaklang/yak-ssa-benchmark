@@ -1,0 +1,24 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Reports (generated on remote server, don't commit)
+*-scan-result.json
+*-comparison-*.json
+
+# Keep baseline files but ignore them in example projects
+apps/ssa-benchmark/configs/example-project/baseline.json
+
+# Keep the baseline schema
+!apps/ssa-benchmark/comparison-report.schema.json
+

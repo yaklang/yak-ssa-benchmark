@@ -1,0 +1,275 @@
+// =============================================================================
+// SSA Baseline 报告查看器
+// 功能: 独立的报告查看 Web 服务
+// 用途: 查看、分析和管理SSA基线对比报告
+// =============================================================================
+
+// CLI 参数配置
+port = cli.Int("port", cli.setDefault(9095), cli.setHelp("Web服务端口"))
+reportDir = cli.String("report-dir", cli.setDefault("."), cli.setHelp("报告目录路径"))
+frontendPath = cli.String("frontend", cli.setDefault(""), cli.setHelp("前端HTML文件路径（可选，默认自动查找）"))
+
+// 验证参数
+cli.check()
+
+yakit.Info("Starting SSA Baseline Report Viewer")
+yakit.Info("Report Directory: %s", reportDir)
+yakit.Info("Web Port: %d", port)
+
+// 加载前端HTML
+var htmlContent
+htmlLoaded = false
+
+// 优先使用指定的前端路径
+if frontendPath != "" {
+    content, readErr = file.ReadFile(frontendPath)
+    if readErr == nil {
+        htmlContent = content
+        htmlLoaded = true
+        yakit.Info("HTML file loaded from specified path: %s", frontendPath)
+    } else {
+        yakit.Warn("Failed to load HTML from specified path %s: %v, trying default paths...", frontendPath, readErr)
+    }
+}
+
+// 如果没有指定路径或加载失败,使用默认路径列表
+if !htmlLoaded {
+    possiblePaths = [
+        "report-viewer.html",
+        "./report-viewer.html",
+        "common/ssa_bootstrapping/benchmark/report-viewer.html",
+    ]
+
+    for htmlPath in possiblePaths {
+        content, readErr = file.ReadFile(htmlPath)
+        if readErr == nil {
+            htmlContent = content
+            htmlLoaded = true
+            yakit.Info("HTML file loaded from: %s", htmlPath)
+            break
+        }
+    }
+}
+
+if !htmlLoaded {
+    yakit.Error("Failed to load frontend HTML file")
+    die("Frontend HTML file not found. Please ensure report-viewer.html exists.")
+}
+
+// 首页处理函数
+indexHandle = func(rsp, req) {
+    yakit.Info("Serving index.html to %s", req.RemoteAddr)
+    rsp.Header().Set("Content-Type", "text/html; charset=utf-8")
+    rsp.WriteHeader(200)
+    rsp.Write(htmlContent)
+}
+
+// API: 获取报告列表
+reportsListHandle = func(rsp, req) {
+    yakit.Info("API request: GET /api/reports from %s", req.RemoteAddr)
+
+    rsp.Header().Set("Content-Type", "application/json; charset=utf-8")
+    rsp.Header().Set("Access-Control-Allow-Origin", "*")
+
+    // 收集报告文件信息
+    reports = []
+
+    yakit.Info("Reading files from directory: %s", reportDir)
+
+    // 使用 file.ReadFileInfoInDirectory 递归读取所有文件
+    allFiles, readErr = file.ReadFileInfoInDirectory(reportDir)
+    if readErr != nil && readErr != undefined {
+        yakit.Error("Failed to read directory: %v", readErr)
+        rsp.WriteHeader(500)
+        rsp.Write(json.dumps({
+            "success": false,
+            "message": sprintf("Failed to read directory: %v", readErr),
+            "reports": []
+        }))
+        return
+    }
+
+    // 遍历所有文件并过滤报告文件
+    for fileInfo in allFiles {
+        // 跳过目录
+        if fileInfo.IsDir {
+            continue
+        }
+
+        filename = fileInfo.Name
+        filepath = fileInfo.Path
+
+        // 只处理 comparison- 开头的 JSON 文件，排除 schema 文件
+        if !str.HasPrefix(filename, "comparison-") || !str.HasSuffix(filename, ".json") || str.Contains(filename, ".schema.") {
+            continue
+        }
+
+        yakit.Info("Found comparison report: %s", filepath)
+
+        // 获取文件修改时间和大小
+        modTime = fileInfo.BuildIn.ModTime().Unix()
+        fileSize = fileInfo.BuildIn.Size()
+
+        // 读取文件内容
+        content, fileReadErr = file.ReadFile(filepath)
+        if fileReadErr != nil && fileReadErr != undefined {
+            yakit.Warn("Failed to read file %s: %v", filepath, fileReadErr)
+            continue
+        }
+
+        reportData = json.loads(content)
+        if reportData == nil || reportData == undefined {
+            yakit.Warn("Failed to parse JSON from file %s", filepath)
+            continue
+        }
+
+        // 安全地提取嵌套数据
+        reportType = ""
+        generatedAt = ""
+        overallPass = false
+        baselineTotal = 0
+        currentTotal = 0
+        passedComparisons = 0
+        failedComparisons = 0
+
+        if reportData != nil && reportData != undefined {
+            if reportData["report_type"] != nil && reportData["report_type"] != undefined {
+                reportType = sprintf("%v", reportData["report_type"])
+            }
+            if reportData["generated_at"] != nil && reportData["generated_at"] != undefined {
+                generatedAt = sprintf("%v", reportData["generated_at"])
+            }
+            if reportData["summary"] != nil && reportData["summary"] != undefined {
+                summary = reportData["summary"]
+                if summary["overall_pass"] != nil && summary["overall_pass"] != undefined {
+                    overallPass = summary["overall_pass"]
+                }
+                if summary["passed_comparisons"] != nil && summary["passed_comparisons"] != undefined {
+                    passedComparisons = summary["passed_comparisons"]
+                }
+                if summary["failed_comparisons"] != nil && summary["failed_comparisons"] != undefined {
+                    failedComparisons = summary["failed_comparisons"]
+                }
+            }
+            if reportData["baseline_info"] != nil && reportData["baseline_info"] != undefined {
+                baselineInfo = reportData["baseline_info"]
+                if baselineInfo["summary"] != nil && baselineInfo["summary"] != undefined {
+                    baselineSummary = baselineInfo["summary"]
+                    if baselineSummary["total"] != nil && baselineSummary["total"] != undefined {
+                        baselineTotal = baselineSummary["total"]
+                    }
+                }
+            }
+            if reportData["current_info"] != nil && reportData["current_info"] != undefined {
+                currentInfo = reportData["current_info"]
+                if currentInfo["summary"] != nil && currentInfo["summary"] != undefined {
+                    currentSummary = currentInfo["summary"]
+                    if currentSummary["total"] != nil && currentSummary["total"] != undefined {
+                        currentTotal = currentSummary["total"]
+                    }
+                }
+            }
+        }
+
+        reportInfo = {
+            "filename": filename,
+            "filepath": filepath,
+            "modTime": modTime,
+            "size": fileSize,
+            "report_type": reportType,
+            "generated_at": generatedAt,
+            "overall_pass": overallPass,
+            "baseline_total": baselineTotal,
+            "current_total": currentTotal,
+            "passed_comparisons": passedComparisons,
+            "failed_comparisons": failedComparisons,
+        }
+
+        reports = append(reports, reportInfo)
+    }
+
+    yakit.Info("Found %d comparison report files", len(reports))
+
+    // 按修改时间降序排序
+    for i = 0; i < len(reports); i++ {
+        for j = i + 1; j < len(reports); j++ {
+            if reports[i]["modTime"] < reports[j]["modTime"] {
+                temp = reports[i]
+                reports[i] = reports[j]
+                reports[j] = temp
+            }
+        }
+    }
+
+    rsp.WriteHeader(200)
+    rsp.Write(json.dumps({
+        "success": true,
+        "count": len(reports),
+        "reports": reports
+    }))
+}
+
+// API: 获取单个报告详情
+reportDetailHandle = func(rsp, req) {
+    yakit.Info("API request: GET /api/report from %s", req.RemoteAddr)
+
+    rsp.Header().Set("Content-Type", "application/json; charset=utf-8")
+    rsp.Header().Set("Access-Control-Allow-Origin", "*")
+
+    // 获取文件名参数
+    filename = req.URL.Query().Get("filename")
+    if filename == "" {
+        rsp.WriteHeader(400)
+        rsp.Write(json.dumps({
+            "success": false,
+            "message": "Missing filename parameter"
+        }))
+        return
+    }
+
+    // 读取报告文件
+    filepath = sprintf("%s/%s", reportDir, filename)
+    content, readErr = file.ReadFile(filepath)
+    if readErr != nil && readErr != undefined {
+        yakit.Error("Failed to read report file %s: %v", filepath, readErr)
+        rsp.WriteHeader(404)
+        rsp.Write(json.dumps({
+            "success": false,
+            "message": sprintf("Report not found: %v", readErr)
+        }))
+        return
+    }
+
+    // 解析 JSON
+    reportData = json.loads(content)
+    if reportData == nil || reportData == undefined {
+        rsp.WriteHeader(500)
+        rsp.Write(json.dumps({
+            "success": false,
+            "message": "Failed to parse report JSON"
+        }))
+        return
+    }
+
+    rsp.WriteHeader(200)
+    rsp.Write(json.dumps({
+        "success": true,
+        "report": reportData
+    }))
+}
+
+// 注册路由
+handles = []
+handles = append(handles, httpserver.routeHandler("/", indexHandle))
+handles = append(handles, httpserver.routeHandler("/index.html", indexHandle))
+handles = append(handles, httpserver.routeHandler("/api/reports", reportsListHandle))
+handles = append(handles, httpserver.routeHandler("/api/report", reportDetailHandle))
+
+// 启动服务器
+yakit.Info("Starting HTTP server on 0.0.0.0:%d", port)
+println(sprintf("\n✓ SSA Baseline Report Viewer started on http://0.0.0.0:%d", port))
+println(sprintf("✓ Report Directory: %s", reportDir))
+println("\nService is running. Press Ctrl+C to stop.")
+
+httpserver.Serve("0.0.0.0", port, handles...)
+

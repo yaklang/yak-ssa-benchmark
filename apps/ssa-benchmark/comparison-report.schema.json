@@ -1,0 +1,281 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://yaklang.io/schemas/ssa-baseline-comparison.json",
+  "title": "SSA Baseline Comparison Report",
+  "description": "SSA静态分析基线对比报告的完整Schema定义",
+  "type": "object",
+  "required": [
+    "report_type",
+    "generated_at",
+    "baseline_info",
+    "current_info",
+    "comparisons",
+    "summary"
+  ],
+  "properties": {
+    "report_type": {
+      "type": "string",
+      "const": "ssa_baseline_comparison",
+      "description": "报告类型标识"
+    },
+    "generated_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$",
+      "description": "报告生成时间 (格式: YYYY-MM-DD HH:mm:ss)"
+    },
+    "baseline_info": {
+      "type": "object",
+      "description": "基线扫描信息",
+      "required": ["report_time", "program_name", "summary"],
+      "properties": {
+        "report_time": {
+          "type": "string",
+          "description": "基线报告时间"
+        },
+        "program_name": {
+          "type": "string",
+          "description": "扫描的程序名称"
+        },
+        "program_lang": {
+          "type": "string",
+          "description": "程序语言"
+        },
+        "total_risks": {
+          "type": "integer",
+          "description": "总风险数"
+        },
+        "summary": {
+          "$ref": "#/definitions/RiskSummary"
+        }
+      }
+    },
+    "current_info": {
+      "type": "object",
+      "description": "当前扫描信息",
+      "required": ["report_time", "program_name", "summary"],
+      "properties": {
+        "report_time": {
+          "type": "string",
+          "description": "当前报告时间"
+        },
+        "program_name": {
+          "type": "string",
+          "description": "扫描的程序名称"
+        },
+        "program_lang": {
+          "type": "string",
+          "description": "程序语言"
+        },
+        "total_risks": {
+          "type": "integer",
+          "description": "总风险数"
+        },
+        "summary": {
+          "$ref": "#/definitions/RiskSummary"
+        }
+      }
+    },
+    "comparisons": {
+      "type": "array",
+      "description": "按严重程度的详细对比结果",
+      "items": {
+        "$ref": "#/definitions/SeverityComparison"
+      },
+      "minItems": 1
+    },
+    "summary": {
+      "type": "object",
+      "description": "总体对比摘要",
+      "required": [
+        "overall_pass",
+        "total_comparisons",
+        "passed_comparisons",
+        "failed_comparisons"
+      ],
+      "properties": {
+        "overall_pass": {
+          "type": "boolean",
+          "description": "总体是否通过"
+        },
+        "total_comparisons": {
+          "type": "integer",
+          "description": "总对比项数"
+        },
+        "passed_comparisons": {
+          "type": "integer",
+          "description": "通过的对比项数"
+        },
+        "failed_comparisons": {
+          "type": "integer",
+          "description": "失败的对比项数"
+        }
+      }
+    }
+  },
+  "definitions": {
+    "RiskSummary": {
+      "type": "object",
+      "description": "风险数量统计",
+      "required": ["total", "critical", "high", "medium", "low"],
+      "properties": {
+        "total": {
+          "type": "integer",
+          "description": "总风险数",
+          "minimum": 0
+        },
+        "critical": {
+          "type": "integer",
+          "description": "严重级别风险数",
+          "minimum": 0
+        },
+        "high": {
+          "type": "integer",
+          "description": "高危级别风险数",
+          "minimum": 0
+        },
+        "medium": {
+          "type": "integer",
+          "description": "中危级别风险数",
+          "minimum": 0
+        },
+        "low": {
+          "type": "integer",
+          "description": "低危级别风险数",
+          "minimum": 0
+        },
+        "info": {
+          "type": "integer",
+          "description": "信息级别风险数",
+          "minimum": 0
+        }
+      }
+    },
+    "SeverityComparison": {
+      "type": "object",
+      "description": "单个严重级别的对比结果",
+      "required": [
+        "severity",
+        "baseline_count",
+        "current_count",
+        "matched_count",
+        "missing_count",
+        "new_count",
+        "pass"
+      ],
+      "properties": {
+        "severity": {
+          "type": "string",
+          "enum": ["critical", "high", "medium", "low", "info"],
+          "description": "风险严重程度"
+        },
+        "baseline_count": {
+          "type": "integer",
+          "description": "基线中该级别的风险数量",
+          "minimum": 0
+        },
+        "current_count": {
+          "type": "integer",
+          "description": "当前扫描中该级别的风险数量",
+          "minimum": 0
+        },
+        "matched_count": {
+          "type": "integer",
+          "description": "匹配的风险数量",
+          "minimum": 0
+        },
+        "missing_count": {
+          "type": "integer",
+          "description": "缺失的风险数量(基线有但当前没有)",
+          "minimum": 0
+        },
+        "new_count": {
+          "type": "integer",
+          "description": "新增的风险数量(当前有但基线没有)",
+          "minimum": 0
+        },
+        "pass": {
+          "type": "boolean",
+          "description": "该级别对比是否通过"
+        },
+        "diff": {
+          "type": "integer",
+          "description": "数量差异(current - baseline)"
+        },
+        "abs_diff": {
+          "type": "integer",
+          "description": "绝对差异值",
+          "minimum": 0
+        },
+        "max_allowed_diff": {
+          "type": "number",
+          "description": "允许的最大差异(仅中低危)",
+          "minimum": 0
+        },
+        "match_rate": {
+          "type": "string",
+          "description": "匹配率(百分比字符串,如'95.5%'、'100%'或'N/A')",
+          "pattern": "^(\\d+(\\.\\d+)?%|N/A|NaN%)$"
+        },
+        "missing": {
+          "type": "array",
+          "description": "缺失的风险列表(基线中存在但当前扫描缺失)",
+          "items": {
+            "$ref": "#/definitions/RiskInfo"
+          }
+        },
+        "new": {
+          "type": "array",
+          "description": "新增的风险列表(当前扫描新发现,基线中不存在)",
+          "items": {
+            "$ref": "#/definitions/RiskInfo"
+          }
+        }
+      }
+    },
+    "RiskInfo": {
+      "type": "object",
+      "description": "单个风险的基本信息",
+      "required": [
+        "hash",
+        "feature_hash",
+        "title",
+        "severity",
+        "rule_name"
+      ],
+      "properties": {
+        "hash": {
+          "type": "string",
+          "description": "风险哈希值"
+        },
+        "feature_hash": {
+          "type": "string",
+          "description": "风险特征哈希(用于匹配)",
+          "minLength": 40
+        },
+        "title": {
+          "type": "string",
+          "description": "风险标题"
+        },
+        "file": {
+          "type": "string",
+          "description": "文件路径"
+        },
+        "line": {
+          "type": "integer",
+          "description": "行号",
+          "minimum": 1
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["critical", "high", "medium", "low", "info"],
+          "description": "风险严重程度"
+        },
+        "rule_name": {
+          "type": "string",
+          "description": "触发的规则名称"
+        }
+      }
+    }
+  }
+}
+

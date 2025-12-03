@@ -1,0 +1,570 @@
+/*
+Yak Script Systemd Service Installer
+
+Features:
+- Install yak scripts as systemd services
+- Support custom service names, script paths and parameters
+- Automatic system environment detection
+- Complete service management functionality
+
+Usage:
+yak install-yak-scripts-to-systemd-en.yak --service-name <service-name> --script-path <script-path> [--script-args <args>]
+
+Example:
+yak install-yak-scripts-to-systemd-en.yak --service-name "my-web-service" --script-path "/opt/scripts/web.yak" --script-args "--port 8080 --host 0.0.0.0"
+*/
+
+// Parse command line arguments
+serviceName = cli.String("service-name", cli.setRequired(true), cli.setHelp("Service name (required)"))
+scriptPath = cli.String("script-path", cli.setRequired(true), cli.setHelp("Yak script path (required)"))
+scriptArgs = cli.String("script-args", cli.setDefault(""), cli.setHelp("Script arguments (optional)"))
+serviceUser = cli.String("user", cli.setDefault("root"), cli.setHelp("User to run the service"))
+serviceGroup = cli.String("group", cli.setDefault("root"), cli.setHelp("Group to run the service"))
+restartPolicy = cli.String("restart", cli.setDefault("always"), cli.setHelp("Restart policy (always/on-failure/no)"))
+serviceType = cli.String("type", cli.setDefault("simple"), cli.setHelp("Service type (simple/oneshot/forking)"))
+noStart = cli.Bool("no-start", cli.setDefault(false), cli.setHelp("Do not start the service"))
+disable = cli.Bool("disable", cli.setDefault(false), cli.setHelp("Do not enable auto-start"))
+dryRun = cli.Bool("dry-run", cli.setDefault(false), cli.setHelp("Show configuration only, do not install"))
+
+cli.check()
+
+// Set default behavior: start and enable by default, unless specified otherwise
+startNow = !noStart      // Start by default, unless --no-start is specified
+enableAutoStart = !disable  // Enable by default, unless --disable is specified
+
+// Check system environment
+checkSystemEnvironment = func() {
+    osType = os.OS
+    log.Info(f"Detected operating system: ${osType}")
+    
+    if str.ToLower(osType) != "linux" {
+        log.Error("Error: This tool only supports Linux systems")
+        log.Info("systemd service management is only available on Linux systems")
+        return false
+    }
+    
+    // Check if systemctl command is available
+    try {
+        result = exec.System("which systemctl")~
+        if result == "" {
+            log.Error("Error: systemctl command not found")
+            return false
+        }
+        log.Info("✓ systemctl command available")
+    } catch err {
+        log.Error(f"Error: Unable to check systemctl command: ${err}")
+        return false
+    }
+    
+    // Check if systemd-analyze command is available
+    try {
+        result = exec.System("which systemd-analyze")~
+        if result == "" {
+            log.Warn("Warning: systemd-analyze command not found, advanced validation will be skipped")
+        } else {
+            log.Info("✓ systemd-analyze command available")
+        }
+    } catch err {
+        log.Warn(f"Warning: Unable to check systemd-analyze command: ${err}")
+    }
+    
+    // Check root permissions (by trying to access /etc/systemd/system/ directory)
+    systemdDir = "/etc/systemd/system/"
+    if !file.IsDir(systemdDir) {
+        log.Error(f"Error: Unable to access systemd directory: ${systemdDir}")
+        return false
+    }
+    
+    log.Info("✓ System environment check passed")
+    return true
+}
+
+// Validate input parameters
+validateInputs = func() {
+    log.Info("Validating input parameters...")
+    
+    // Check service name
+    if serviceName == "" {
+        log.Error("Error: Service name cannot be empty")
+        return false
+    }
+    
+    if str.Contains(serviceName, " ") || str.Contains(serviceName, "/") {
+        log.Error("Error: Service name cannot contain spaces or slashes")
+        return false
+    }
+    
+    log.Info(f"✓ Service name: ${serviceName}")
+    
+    // Check script path
+    if scriptPath == "" {
+        log.Error("Error: Script path cannot be empty")
+        return false
+    }
+    
+    // Convert to absolute path
+    absScriptPath = file.Abs(scriptPath)
+    if !file.IsExisted(absScriptPath) {
+        log.Error(f"Error: Script file does not exist: ${absScriptPath}")
+        return false
+    }
+    
+    log.Info(f"✓ Script path: ${absScriptPath}")
+    
+    // Check yak binary file
+    yakBinary, err = os.Executable()
+    if err != nil {
+        log.Error(f"Error: Unable to get yak executable path: ${err}")
+        return false
+    }
+    
+    if yakBinary == "" {
+        log.Error("Error: yak executable path is empty")
+        return false
+    }
+    
+    log.Info(f"✓ Yak binary: ${yakBinary}")
+    
+    // Update global variables
+    scriptPath = absScriptPath
+    
+    log.Info("✓ Input parameter validation passed")
+    return true
+}
+
+// Check if service already exists
+checkExistingService = func() {
+    log.Info(f"Checking if service already exists: ${serviceName}")
+    
+    try {
+        result = exec.System(f"systemctl list-unit-files | grep '^${serviceName}.service'")~
+        if str.Contains(result, f"${serviceName}.service") {
+            log.Warn(f"Warning: Service ${serviceName} already exists")
+            
+            // Get existing service status
+            statusResult = exec.System(f"systemctl status ${serviceName}")~
+            log.Info(f"Existing service status:\n${statusResult}")
+            
+            return true
+        }
+    } catch err {
+        // Service doesn't exist, this is normal
+    }
+    
+    log.Info("✓ Service does not exist, can install")
+    return false
+}
+
+// Clean up old service
+cleanupOldService = func() {
+    log.Info(f"Cleaning up old service: ${serviceName}")
+    
+    if dryRun {
+        log.Info("--- DRY RUN mode, cleanup commands ---")
+        log.Info(f"systemctl stop ${serviceName}")
+        log.Info(f"systemctl disable ${serviceName}")
+        log.Info(f"rm /etc/systemd/system/${serviceName}.service")
+        log.Info(f"systemctl daemon-reload")
+        log.Info("--- DRY RUN mode, will not actually execute ---")
+        return true
+    }
+    
+    success = true
+    
+    // Stop service
+    try {
+        log.Info("Stopping old service...")
+        exec.System(f"systemctl stop ${serviceName}")~
+        log.Info("✓ Old service stopped")
+    } catch err {
+        log.Warn(f"Warning: Failed to stop service (may already be stopped): ${err}")
+    }
+    
+    // Disable service
+    try {
+        log.Info("Disabling old service...")
+        exec.System(f"systemctl disable ${serviceName}")~
+        log.Info("✓ Old service disabled")
+    } catch err {
+        log.Warn(f"Warning: Failed to disable service: ${err}")
+    }
+    
+    // Delete service file
+    try {
+        serviceFilePath = f"/etc/systemd/system/${serviceName}.service"
+        log.Info(f"Deleting old service file: ${serviceFilePath}")
+        exec.System(f"rm -f ${serviceFilePath}")~
+        log.Info("✓ Old service file deleted")
+    } catch err {
+        log.Error(f"Error: Failed to delete service file: ${err}")
+        success = false
+    }
+    
+    // Reload systemd configuration
+    try {
+        log.Info("Reloading systemd configuration...")
+        exec.System("systemctl daemon-reload")~
+        log.Info("✓ systemd configuration reloaded")
+    } catch err {
+        log.Error(f"Error: Failed to reload configuration: ${err}")
+        success = false
+    }
+    
+    return success
+}
+
+// Create systemd service configuration
+createServiceConfig = func() {
+    log.Info("Creating systemd service configuration...")
+    
+    // Get yak executable path
+    yakBinary = os.Executable()~
+    
+    // Build complete execution command
+    execCommand = f"${yakBinary} ${scriptPath}"
+    if scriptArgs != "" {
+        execCommand = f"${execCommand} ${scriptArgs}"
+    }
+    
+    log.Info(f"Execution command: ${execCommand}")
+    log.Info(f"Service type: ${serviceType}")
+    log.Info(f"Running user: ${serviceUser}")
+    log.Info(f"Running group: ${serviceGroup}")
+    log.Info(f"Restart policy: ${restartPolicy}")
+    
+    // Create service configuration (using all available configuration options)
+    fileName, serviceContent = systemd.Create(
+        serviceName,
+        systemd.service_exec_start(execCommand),
+        systemd.service_type(serviceType),
+        systemd.service_user(serviceUser),
+        systemd.service_group(serviceGroup),
+        systemd.service_restart(restartPolicy),
+        systemd.service_restart_sec(5),
+        systemd.service_kill_mode("mixed"),
+        systemd.service_kill_signal("SIGTERM")
+    )
+    
+    log.Info(f"✓ Service configuration file name: ${fileName}")
+    
+    // Validate service file format
+    serviceContentStr = string(serviceContent)
+    log.Info("Validating service file format...")
+    
+    // Check for format issues
+    lines = str.Split(serviceContentStr, "\n")
+    validLines = []
+    for line in lines {
+        line = str.TrimSpace(line)
+        if line == "" || str.HasPrefix(line, "#") || str.HasPrefix(line, "[") || str.Contains(line, "=") {
+            validLines = append(validLines, line)
+        } else {
+            log.Warn(f"Skipping potentially problematic line: ${line}")
+        }
+    }
+    
+    // Rebuild service content
+    cleanServiceContent = str.Join(validLines, "\n")
+    log.Info("✓ Service file format validation completed")
+    
+    return fileName, []byte(cleanServiceContent)
+}
+
+// Validate service file
+validateServiceFile = func(fileName, serviceContent) {
+    log.Info("Validating service file...")
+    
+    if dryRun {
+        log.Info("--- DRY RUN mode, validation commands ---")
+        log.Info("Will execute the following validation commands:")
+        log.Info(f"systemd-analyze verify /etc/systemd/system/${fileName}")
+        log.Info("--- DRY RUN mode, will not actually execute ---")
+        return true
+    }
+    
+    // Temporarily save service file for validation
+    tempServicePath = f"/tmp/${fileName}"
+    try {
+        file.Save(tempServicePath, string(serviceContent))
+        log.Info(f"Temporary service file saved: ${tempServicePath}")
+    } catch err {
+        log.Error(f"Error: Failed to save temporary service file: ${err}")
+        return false
+    }
+    
+    success = true
+    
+    // Check if systemd-analyze is available
+    hasSystemdAnalyze = false
+    try {
+        exec.System("which systemd-analyze")~
+        hasSystemdAnalyze = true
+    } catch err {
+        log.Warn("systemd-analyze not available, advanced validation will be skipped")
+    }
+    
+    // Use systemd-analyze verify to validate service file (if available)
+    if hasSystemdAnalyze {
+        log.Info("Using systemd-analyze to validate service file format...")
+        try {
+            result = exec.System(f"systemd-analyze verify ${tempServicePath}")~
+            log.Info("✓ systemd-analyze validation passed")
+            if result != "" {
+                log.Info(f"Validation output: ${result}")
+            }
+        } catch err {
+            log.Error(f"Error: systemd-analyze validation failed: ${err}")
+            success = false
+        }
+        
+        // Check service file syntax
+        if success {
+            log.Info("Checking service file syntax...")
+            try {
+                // Use systemd-analyze cat-config to check configuration
+                result = exec.System(f"systemd-analyze cat-config systemd/system/${fileName}")~
+                if str.Contains(result, "No files found") {
+                    log.Info("✓ Service file name format is correct")
+                }
+            } catch err {
+                log.Warn(f"Warning: Unable to execute systemd-analyze cat-config: ${err}")
+            }
+        }
+    } else {
+        // Basic format check
+        log.Info("Performing basic format check...")
+        serviceStr = string(serviceContent)
+        if str.Contains(serviceStr, "[Unit]") && str.Contains(serviceStr, "[Service]") && str.Contains(serviceStr, "[Install]") {
+            log.Info("✓ Basic format check passed")
+        } else {
+            log.Error("Error: Service file missing required sections ([Unit], [Service], [Install])")
+            success = false
+        }
+    }
+    
+    // Clean up temporary file
+    try {
+        exec.System(f"rm -f ${tempServicePath}")~
+    } catch err {
+        log.Warn(f"Warning: Failed to clean up temporary file: ${err}")
+    }
+    
+    if success {
+        log.Info("✓ Service file validation completed")
+    } else {
+        log.Error("✗ Service file validation failed")
+    }
+    
+    return success
+}
+
+// Install service
+installService = func(fileName, serviceContent) {
+    serviceFilePath = file.Join("/etc/systemd/system/", fileName)
+    log.Info(f"Installing service to: ${serviceFilePath}")
+    
+    if dryRun {
+        log.Info("--- DRY RUN mode, service configuration content ---")
+        println(string(serviceContent))
+        log.Info("--- DRY RUN mode, will not actually install ---")
+        return true
+    }
+    
+    try {
+        // Save service file
+        file.Save(serviceFilePath, string(serviceContent))
+        log.Info("✓ Service file saved successfully")
+        
+        // Reload systemd configuration
+        log.Info("Reloading systemd configuration...")
+        exec.System("systemctl daemon-reload")~
+        log.Info("✓ systemd configuration reloaded")
+        
+        // Validate installed service file
+        log.Info("Validating installed service file...")
+        try {
+            result = exec.System(f"systemctl cat ${serviceName}")~
+            if str.Contains(result, "[Unit]") && str.Contains(result, "[Service]") {
+                log.Info("✓ Service file correctly installed and recognized by systemctl")
+            } else {
+                log.Warn("Warning: Service file format may have issues")
+            }
+        } catch err {
+            log.Warn(f"Warning: Unable to validate installed service file: ${err}")
+        }
+        
+        return true
+    } catch err {
+        log.Error(f"Error: Service installation failed: ${err}")
+        return false
+    }
+}
+
+// Start and enable service
+manageService = func() {
+    if dryRun {
+        log.Info("--- DRY RUN mode, service management commands ---")
+        if startNow {
+            log.Info(f"systemctl start ${serviceName}")
+        }
+        if enableAutoStart {
+            log.Info(f"systemctl enable ${serviceName}")
+        }
+        log.Info(f"systemctl status ${serviceName}")
+        return true
+    }
+    
+    success = true
+    
+    // Start service
+    if startNow {
+        log.Info(f"Starting service: ${serviceName}")
+        try {
+            exec.System(f"systemctl start ${serviceName}")~
+            log.Info("✓ Service started successfully")
+        } catch err {
+            log.Error(f"Error: Failed to start service: ${err}")
+            success = false
+        }
+    }
+    
+    // Enable auto-start
+    if enableAutoStart {
+        log.Info(f"Enabling service auto-start: ${serviceName}")
+        try {
+            exec.System(f"systemctl enable ${serviceName}")~
+            log.Info("✓ Service auto-start enabled successfully")
+        } catch err {
+            log.Error(f"Error: Failed to enable service auto-start: ${err}")
+            success = false
+        }
+    }
+    
+    // Check service status
+    log.Info("Checking service status...")
+    try {
+        statusResult = exec.System(f"systemctl status ${serviceName}")~
+        log.Info(f"Service status:\n${statusResult}")
+        
+        // Check if running normally
+        activeResult = exec.System(f"systemctl is-active ${serviceName}")~
+        activeResult = str.TrimSpace(activeResult)  // Remove newlines
+        
+        if activeResult == "active" {
+            log.Info("✓ Service running normally")
+        } else {
+            log.Warn(f"Warning: Service status abnormal: ${activeResult}")
+        }
+        
+    } catch err {
+        log.Error(f"Error: Failed to check service status: ${err}")
+        success = false
+    }
+    
+    return success
+}
+
+// Show management commands
+showManagementCommands = func() {
+    log.Info("=== Service Management Commands ===")
+    log.Info("View service status:")
+    log.Info(f"  systemctl status ${serviceName}")
+    log.Info("")
+    log.Info("Start/stop/restart service:")
+    log.Info(f"  systemctl start ${serviceName}")
+    log.Info(f"  systemctl stop ${serviceName}")
+    log.Info(f"  systemctl restart ${serviceName}")
+    log.Info("")
+    log.Info("Enable/disable auto-start:")
+    log.Info(f"  systemctl enable ${serviceName}")
+    log.Info(f"  systemctl disable ${serviceName}")
+    log.Info("")
+    log.Info("View service logs:")
+    log.Info(f"  journalctl -u ${serviceName} -f")
+    log.Info(f"  journalctl -u ${serviceName} --since today")
+    log.Info("")
+    log.Info("Uninstall service:")
+    log.Info(f"  systemctl stop ${serviceName}")
+    log.Info(f"  systemctl disable ${serviceName}")
+    log.Info(f"  rm /etc/systemd/system/${serviceName}.service")
+    log.Info(f"  systemctl daemon-reload")
+}
+
+// Show configuration summary
+showConfigSummary = func() {
+    log.Info("=== Configuration Summary ===")
+    log.Info(f"Service name: ${serviceName}")
+    log.Info(f"Script path: ${scriptPath}")
+    log.Info(f"Script arguments: ${scriptArgs}")
+    log.Info(f"Service type: ${serviceType}")
+    log.Info(f"Running user: ${serviceUser}")
+    log.Info(f"Running group: ${serviceGroup}")
+    log.Info(f"Restart policy: ${restartPolicy}")
+    log.Info(f"Enable auto-start: ${enableAutoStart}")
+    log.Info(f"Start immediately: ${startNow}")
+    log.Info(f"DRY RUN mode: ${dryRun}")
+    log.Info("")
+}
+
+// Main function
+main = func() {
+    log.Info("Yak Script Systemd Service Installer")
+    log.Info("=====================================")
+    
+    // Show configuration summary
+    showConfigSummary()
+    
+    // Check system environment
+    if !checkSystemEnvironment() {
+        log.Error("System environment check failed, exiting")
+        return
+    }
+    
+    // Validate input parameters
+    if !validateInputs() {
+        log.Error("Input parameter validation failed, exiting")
+        return
+    }
+    
+    // Check existing service and cleanup
+    serviceExists = checkExistingService()
+    if serviceExists {
+        log.Warn("Service already exists, will clean up old service before installing new one")
+        if !cleanupOldService() {
+            log.Error("Failed to clean up old service, exiting")
+            return
+        }
+    }
+    
+    // Create service configuration
+    fileName, serviceContent = createServiceConfig()
+    
+    // Validate service file
+    if !validateServiceFile(fileName, serviceContent) {
+        log.Error("Service file validation failed, exiting")
+        return
+    }
+    
+    // Install service
+    if !installService(fileName, serviceContent) {
+        log.Error("Service installation failed, exiting")
+        return
+    }
+    
+    // Manage service
+    if !manageService() {
+        log.Warn("Service management encountered issues, please check logs")
+    }
+    
+    // Show management commands
+    showManagementCommands()
+    
+    if dryRun {
+        log.Info("DRY RUN mode completed, service not actually installed")
+    } else {
+        log.Info("✓ Service installation completed")
+    }
+}
+
+// Execute main function
+main()

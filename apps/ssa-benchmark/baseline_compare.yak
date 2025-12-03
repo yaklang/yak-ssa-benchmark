@@ -1,0 +1,537 @@
+# SSA Baseline Comparison Tool
+# 用于对比当前扫描结果与基准结果，确保 SSA 更新不影响已知风险检测
+
+yakit.AutoInitYakit()
+
+# 获取命令行参数
+baselineFile = cli.String("baseline", 
+    cli.setRequired(true),
+    cli.setVerboseName("基准报告文件"),
+    cli.setHelp("基准扫描结果 JSON 文件路径")
+)
+
+currentFile = cli.String("current",
+    cli.setRequired(true),
+    cli.setVerboseName("当前扫描报告"),
+    cli.setHelp("当前扫描结果 JSON 文件路径")
+)
+
+outputFile = cli.String("output",
+    cli.setDefault("comparison-report.json"),
+    cli.setVerboseName("输出报告文件"),
+    cli.setHelp("对比报告输出路径")
+)
+
+tolerance = cli.Int("tolerance",
+    cli.setDefault(10),
+    cli.setVerboseName("容差百分比"),
+    cli.setHelp("中危和低危风险数量容差百分比 默认值为10")
+)
+
+cli.check()
+
+# 读取 JSON 文件
+loadReport = func(filepath) {
+    yakit.Info("Reading report: %s", filepath)
+    content = file.ReadFile(filepath)~
+    if content == undefined {
+        yakit.Error("Failed to read file: %s", filepath)
+        return undefined
+    }
+
+    ssareport := json.loads(string(content))
+    if report == undefined {
+        yakit.Error("Failed to parse JSON: %s", filepath)
+        return undefined
+    }
+
+    return ssareport
+}
+
+# 提取风险统计信息
+extractRiskStats = func(ssareport) {
+    if ssareport == undefined || ssareport["Risks"] == undefined {
+        return {
+            "total": 0,
+            "critical": [],
+            "high": [],
+            "medium": [],
+            "low": [],
+            "info": []
+        }
+    }
+
+    stats = {
+        "total": 0,
+        "critical": [],
+        "high": [],
+        "medium": [],
+        "low": [],
+        "info": []
+    }
+
+    risks = ssareport["Risks"]
+    for riskHash, riskObj in risks {
+        stats["total"] = stats["total"] + 1
+        severity = str.ToLower(riskObj["severity"])
+
+        riskInfo = {
+            "hash": riskHash,
+            "feature_hash": riskObj["risk_feature_hash"],
+            "title": riskObj["title"],
+            "file": riskObj["code_source_url"],
+            "line": riskObj["line"],
+            "severity": severity,
+            "rule_name": riskObj["rule_name"]
+        }
+
+        if severity == "critical" {
+            stats["critical"] = append(stats["critical"], riskInfo)
+        } elif severity == "high" {
+            stats["high"] = append(stats["high"], riskInfo)
+        } elif severity == "medium" || severity == "mid" {
+            stats["medium"] = append(stats["medium"], riskInfo)
+        } elif severity == "low" {
+            stats["low"] = append(stats["low"], riskInfo)
+        } else {
+            stats["info"] = append(stats["info"], riskInfo)
+        }
+    }
+
+    return stats
+}
+
+# 对比严重/高危风险（必须精确匹配 risk_feature_hash）
+compareCriticalHigh = func(baselineRisks, currentRisks, severity) {
+    yakit.Info("Comparing %s severity risks...", severity)
+
+    # 构建 feature_hash 映射
+    baselineMap = make(map[any]any)
+    skippedBaseline = 0
+    for riskObj in baselineRisks {
+        if riskObj["feature_hash"] != undefined && riskObj["feature_hash"] != "" {
+            baselineMap[riskObj["feature_hash"]] = riskObj
+        } else {
+            skippedBaseline = skippedBaseline + 1
+        }
+    }
+    if skippedBaseline > 0 {
+        yakit.Warn("Skipped %d baseline %s risks due to feature_hash missing in risk info", skippedBaseline, severity)
+    }
+    yakit.Info("%s baseline risks: %d total, %d with feature_hash, %d unique feature_hash",
+        severity, len(baselineRisks), len(baselineRisks) - skippedBaseline, len(baselineMap))
+
+    currentMap = make(map[any]any)
+    skippedCurrent = 0
+    for riskObj in currentRisks {
+        if riskObj["feature_hash"] != undefined && riskObj["feature_hash"] != "" {
+            currentMap[riskObj["feature_hash"]] = riskObj
+        } else {
+            skippedCurrent = skippedCurrent + 1
+        }
+    }
+    if skippedCurrent > 0 {
+        yakit.Warn("Skipped %d current %s risks due to feature_hash missing in risk info", skippedCurrent, severity)
+    }
+    yakit.Info("%s current risks: %d total, %d with feature_hash, %d unique feature_hash",
+        severity, len(currentRisks), len(currentRisks) - skippedCurrent, len(currentMap))
+
+    # 查找缺失的风险
+    missing = []
+    for featureHash, riskObj in baselineMap {
+        if currentMap[featureHash] == undefined {
+            missing = append(missing, riskObj)
+        }
+    }
+    yakit.Info("Found %d missing %s risks (baseline has but current doesn't)", len(missing), severity)
+
+    # 查找新增的风险
+    newRisks = []
+    for featureHash, riskObj in currentMap {
+        if baselineMap[featureHash] == undefined {
+            newRisks = append(newRisks, riskObj)
+        }
+    }
+    yakit.Info("Found %d new %s risks (current has but baseline doesn't)", len(newRisks), severity)
+
+    # 计算匹配数量
+    matchedCount = 0
+    for featureHash in currentMap {
+        if baselineMap[featureHash] != undefined {
+            matchedCount = matchedCount + 1
+        }
+    }
+    yakit.Info("Matched %d %s risks, baseline map size: %d, current map size: %d", matchedCount, severity, len(baselineMap), len(currentMap))
+
+    # 计算匹配率 (基于唯一feature_hash)
+    uniqueBaselineCount = len(baselineMap)
+    uniqueCurrentCount = len(currentMap)
+    matchRate = "N/A"
+    if uniqueBaselineCount > 0 {
+        matchRate = sprintf("%.1f%%", float(matchedCount) / float(uniqueBaselineCount) * 100)
+    }
+
+    return {
+        "severity": severity,
+        "baseline_count": uniqueBaselineCount,  # 使用唯一feature_hash数量
+        "current_count": uniqueCurrentCount,     # 使用唯一feature_hash数量
+        "matched_count": matchedCount,
+        "missing_count": len(missing),
+        "new_count": len(newRisks),
+        "match_rate": matchRate,
+        "missing": missing,
+        "new": newRisks,
+        "pass": len(missing) == 0 && uniqueBaselineCount == uniqueCurrentCount
+    }
+}
+
+# 对比中危/低危风险（数量大体相同即可，容差范围内）
+compareMediumLow = func(baselineRisks, currentRisks, severity, tolerancePct) {
+    yakit.Info("Comparing %s severity risks (with %d%% tolerance)...", severity, tolerancePct)
+
+    # 构建 feature_hash 映射（先去重，然后计数）
+    baselineMap = make(map[any]any)
+    skippedBaseline = 0
+    for riskObj in baselineRisks {
+        if riskObj["feature_hash"] != undefined && riskObj["feature_hash"] != "" {
+            baselineMap[riskObj["feature_hash"]] = riskObj
+        } else {
+            skippedBaseline = skippedBaseline + 1
+        }
+    }
+    if skippedBaseline > 0 {
+        yakit.Warn("Skipped %d baseline %s risks due to feature_hash missing in risk info", skippedBaseline, severity)
+    }
+
+    currentMap = make(map[any]any)
+    skippedCurrent = 0
+    for riskObj in currentRisks {
+        if riskObj["feature_hash"] != undefined && riskObj["feature_hash"] != "" {
+            currentMap[riskObj["feature_hash"]] = riskObj
+        } else {
+            skippedCurrent = skippedCurrent + 1
+        }
+    }
+    if skippedCurrent > 0 {
+        yakit.Warn("Skipped %d current %s risks without feature_hash", skippedCurrent, severity)
+    }
+
+    # 使用唯一 feature_hash 的数量（与 compareCriticalHigh 保持一致）
+    baselineCount = len(baselineMap)
+    currentCount = len(currentMap)
+
+    yakit.Info("%s baseline risks: %d total, %d with feature_hash, %d unique feature_hash",
+        severity, len(baselineRisks), len(baselineRisks) - skippedBaseline, baselineCount)
+    yakit.Info("%s current risks: %d total, %d with feature_hash, %d unique feature_hash",
+        severity, len(currentRisks), len(currentRisks) - skippedCurrent, currentCount)
+
+    # 计算容差范围（基于唯一 feature_hash 数量）
+    maxDiff = baselineCount * tolerancePct / 100
+    if maxDiff < 1 {
+        maxDiff = 1  # 至少允许1个差异
+    }
+
+    diffVal = currentCount - baselineCount
+    absDiff = diffVal
+    if absDiff < 0 {
+        absDiff = -absDiff
+    }
+
+    pass = absDiff <= maxDiff
+
+    # 查找缺失的风险
+    missing = []
+    for featureHash, riskObj in baselineMap {
+        if currentMap[featureHash] == undefined {
+            missing = append(missing, riskObj)
+        }
+    }
+
+    # 查找新增的风险
+    newRisks = []
+    for featureHash, riskObj in currentMap {
+        if baselineMap[featureHash] == undefined {
+            newRisks = append(newRisks, riskObj)
+        }
+    }
+
+    # 计算匹配数量
+    matchedCount = 0
+    for featureHash in currentMap {
+        if baselineMap[featureHash] != undefined {
+            matchedCount = matchedCount + 1
+        }
+    }
+
+    # 计算匹配率
+    matchRate = "N/A"
+    if baselineCount > 0 {
+        matchRate = sprintf("%.1f%%", float(matchedCount) / float(baselineCount) * 100)
+    }
+
+    return {
+        "severity": severity,
+        "baseline_count": baselineCount,
+        "current_count": currentCount,
+        "diff": diffVal,
+        "abs_diff": absDiff,
+        "max_allowed_diff": maxDiff,
+        "matched_count": matchedCount,
+        "missing_count": len(missing),
+        "new_count": len(newRisks),
+        "match_rate": matchRate,
+        "missing": missing,
+        "new": newRisks,
+        "pass": pass
+    }
+}
+
+# 生成对比报告
+generateComparisonReport = func(baseline, current, comparisons) {
+    timestampVal = time.Now().Format("2006-01-02 15:04:05")
+
+    # 计算总体通过状态 对比有一个不通过总体就不通过
+    overallPass = true
+    for comparison in comparisons {
+        if !comparison["pass"] {
+            overallPass = false
+        }
+    }
+
+    # 提取统计信息
+    baselineStats = extractRiskStats(baseline)
+    currentStats = extractRiskStats(current)
+    
+    ssaReport = {
+        "report_type": "ssa_baseline_comparison",
+        "generated_at": timestampVal,
+        "baseline_info": {
+            "report_time": baseline["report_time"],
+            "program_name": baseline["program_name"],
+            "program_lang": baseline["program_lang"],
+            "total_risks": baseline["RiskNums"],
+            "summary": {
+                "total": baselineStats["total"],
+                "critical": len(baselineStats["critical"]),
+                "high": len(baselineStats["high"]),
+                "medium": len(baselineStats["medium"]),
+                "low": len(baselineStats["low"]),
+                "info": len(baselineStats["info"])
+            }
+        },
+        "current_info": {
+            "report_time": current["report_time"],
+            "program_name": current["program_name"],
+            "program_lang": current["program_lang"],
+            "total_risks": current["RiskNums"],
+            "summary": {
+                "total": currentStats["total"],
+                "critical": len(currentStats["critical"]),
+                "high": len(currentStats["high"]),
+                "medium": len(currentStats["medium"]),
+                "low": len(currentStats["low"]),
+                "info": len(currentStats["info"])
+            }
+        },
+        "comparisons": comparisons,
+        "summary": {
+            "overall_pass": overallPass,
+            "total_comparisons": len(comparisons),
+            "passed_comparisons": 0,
+            "failed_comparisons": 0
+        }
+    }
+
+    # 统计通过/失败数量
+    for comparison in comparisons {
+        if comparison["pass"] {
+            ssaReport["summary"]["passed_comparisons"] = ssaReport["summary"]["passed_comparisons"] + 1
+        } else {
+            ssaReport["summary"]["failed_comparisons"] = ssaReport["summary"]["failed_comparisons"] + 1
+        }
+    }
+
+    return ssaReport
+}
+
+#================== 主流程 ==================#
+
+yakit.Info("SSA Baseline Comparison Tool Started")
+yakit.Info("Baseline: %s", baselineFile)
+yakit.Info("Current: %s", currentFile)
+
+# 1. 加载报告
+baseline = loadReport(baselineFile)
+if baseline == undefined {
+    yakit.Error("Failed to load baseline report")
+    return
+}
+
+current = loadReport(currentFile)
+if current == undefined {
+    yakit.Error("Failed to load current report")
+    return
+}
+
+yakit.Info("Baseline report loaded: %s (%d risks)", baseline["program_name"], baseline["RiskNums"])
+yakit.Info("Current report loaded: %s (%d risks)", current["program_name"], current["RiskNums"])
+
+# 2. 提取风险统计
+baselineStats = extractRiskStats(baseline)
+currentStats = extractRiskStats(current)
+
+yakit.Info("Baseline stats: Critical=%d, High=%d, Medium=%d, Low=%d, Info=%d",
+    len(baselineStats["critical"]),
+    len(baselineStats["high"]),
+    len(baselineStats["medium"]),
+    len(baselineStats["low"]),
+    len(baselineStats["info"])
+)
+
+yakit.Info("Current stats: Critical=%d, High=%d, Medium=%d, Low=%d, Info=%d",
+    len(currentStats["critical"]),
+    len(currentStats["high"]),
+    len(currentStats["medium"]),
+    len(currentStats["low"]),
+    len(currentStats["info"])
+)
+
+# 3. 执行对比 - 始终对比所有严重级别
+comparisons = []
+
+# 严重级别：精确匹配
+criticalComparison = compareCriticalHigh(
+    baselineStats["critical"],
+    currentStats["critical"],
+    "critical"
+)
+comparisons = append(comparisons, criticalComparison)
+
+if criticalComparison["pass"] {
+    yakit.Info("✓ Critical risks PASSED (%d/%d matched)",
+        criticalComparison["matched_count"],
+        criticalComparison["baseline_count"]
+    )
+} else {
+    yakit.Warn("✗ Critical risks FAILED (missing=%d, new=%d)",
+        criticalComparison["missing_count"],
+        criticalComparison["new_count"]
+    )
+}
+
+# 高危级别：精确匹配
+highComparison = compareCriticalHigh(
+    baselineStats["high"],
+    currentStats["high"],
+    "high"
+)
+comparisons = append(comparisons, highComparison)
+
+if highComparison["pass"] {
+    yakit.Info("✓ High risks PASSED (%d/%d matched)",
+        highComparison["matched_count"],
+        highComparison["baseline_count"]
+    )
+} else {
+    yakit.Warn("✗ High risks FAILED (missing=%d, new=%d)",
+        highComparison["missing_count"],
+        highComparison["new_count"]
+    )
+}
+
+# 中危级别：容差匹配
+mediumComparison = compareMediumLow(
+    baselineStats["medium"],
+    currentStats["medium"],
+    "medium",
+    tolerance
+)
+comparisons = append(comparisons, mediumComparison)
+
+if mediumComparison["pass"] {
+    yakit.Info("✓ Medium risks PASSED (%d vs %d, diff=%d, match=%s)",
+        mediumComparison["baseline_count"],
+        mediumComparison["current_count"],
+        mediumComparison["diff"],
+        mediumComparison["match_rate"]
+    )
+} else {
+    yakit.Warn("✗ Medium risks FAILED (%d vs %d, diff=%d exceeds %d)",
+        mediumComparison["baseline_count"],
+        mediumComparison["current_count"],
+        mediumComparison["abs_diff"],
+        mediumComparison["max_allowed_diff"]
+    )
+}
+
+# 低危级别：容差匹配
+lowComparison = compareMediumLow(
+    baselineStats["low"],
+    currentStats["low"],
+    "low",
+    tolerance
+)
+comparisons = append(comparisons, lowComparison)
+
+if lowComparison["pass"] {
+    yakit.Info("✓ Low risks PASSED (%d vs %d, diff=%d, match=%s)",
+        lowComparison["baseline_count"],
+        lowComparison["current_count"],
+        lowComparison["diff"],
+        lowComparison["match_rate"]
+    )
+} else {
+    yakit.Warn("✗ Low risks FAILED (%d vs %d, diff=%d exceeds %d)",
+        lowComparison["baseline_count"],
+        lowComparison["current_count"],
+        lowComparison["abs_diff"],
+        lowComparison["max_allowed_diff"]
+    )
+}
+
+# 4. 生成最终报告
+finalReport = generateComparisonReport(baseline, current, comparisons)
+
+# 保存报告
+reportJson = json.dumps(finalReport)
+err = file.Save(outputFile, reportJson)
+if err != undefined {
+    yakit.Error("Failed to save report: %v", err)
+} else {
+    yakit.Info("Comparison report saved to: %s", outputFile)
+}
+
+# 输出总结
+println("\n" + "="*60)
+
+summaryData = finalReport["summary"]
+overallPass = summaryData["overall_pass"]
+
+if overallPass {
+    yakit.Info("✓✓✓ BASELINE COMPARISON PASSED ✓✓✓")
+    println("All risk levels match the baseline within acceptable tolerance.")
+} else {
+    yakit.Error("✗✗✗ BASELINE COMPARISON FAILED ✗✗✗")
+    println("Some risk levels do not match the baseline.")
+    println("Please review the detailed comparison report:")
+    println("  " + outputFile)
+}
+println("="*60)
+
+# 输出详细统计
+if summaryData != nil && summaryData != undefined {
+    passedCount = summaryData["passed_comparisons"]
+    failedCount = summaryData["failed_comparisons"]
+    totalCount = summaryData["total_comparisons"]
+    
+    println("\nDetailed Statistics:")
+    println(sprintf("  Passed: %d/%d", passedCount, totalCount))
+    println(sprintf("  Failed: %d/%d", failedCount, totalCount))
+}
+
+yakit.Info("Baseline comparison completed")
+
+# 退出码: 只有失败时返回非0
+if !overallPass {
+    os.Exit(1)
+}
