@@ -1,13 +1,21 @@
 {
-  "project_name": "dvwa",
-  "language": "php",
+  "mode": 127,
+  "base_info": {
+    "program_names": ["dvwa"],
+    "language": "php"
+  },
   "code_source": {
     "kind": "git",
     "url": "https://github.com/digininja/DVWA",
     "branch": "2.5"
   },
-  "exclude_patterns": [],
-  "rule_names": [],
-  "memory": true,
-  "output_format": "irify"
+  "ssa_compile": {
+    "memory_compile": true
+  },
+  "syntax_flow": {
+    "memory": true
+  },
+  "output": {
+    "output_format": "irify"
+  }
 }
