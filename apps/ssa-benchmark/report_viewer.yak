@@ -91,11 +91,6 @@ reportsListHandle = func(rsp, req) {
 
     // 遍历所有文件并过滤报告文件
     for fileInfo in allFiles {
-        // 跳过目录
-        if fileInfo.IsDir {
-            continue
-        }
-
         filename = fileInfo.Name
         filepath = fileInfo.Path
 
