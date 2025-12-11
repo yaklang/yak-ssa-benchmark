@@ -32,6 +32,14 @@ BASELINE_YAK_VERSION="1.4.4-beta18"
 VERSION_URL="https://yaklang.oss-accelerate.aliyuncs.com/yak/latest/version.txt"
 ENGINE_DOWNLOAD_URL_TEMPLATE="https://yaklang.oss-accelerate.aliyuncs.com/yak/{VERSION}/yak_linux_amd64"
 
+# ============= 工具函数 =============
+# 清理项目名称中的特殊字符，生成安全的目录名
+sanitize_project_name() {
+    local name="$1"
+    # 替换不安全的字符为下划线，保留字母、数字、下划线、连字符
+    echo "$name" | sed 's/[^a-zA-Z0-9_-]/_/g' | sed 's/__*/_/g' | sed 's/^_//;s/_$//'
+}
+
 # ============= 日志函数 =============
 log_info() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] $*" | tee -a "$LOG_FILE" >&2
@@ -193,16 +201,17 @@ scan_project() {
     local config_file="$4"
     
     local project_name=$(basename "$project_dir")
-    log_info "Scanning project: $project_name"
+    local safe_project_name=$(sanitize_project_name "$project_name")
+    log_info "Scanning project: $project_name (safe name: $safe_project_name)"
     log_info "Config: $config_file"
     
-    # 创建项目专属的扫描结果目录
-    local project_scan_dir="${REPORT_DIR}/${project_name}-scans"
+    # 创建项目专属的扫描结果目录（使用新结构：project_name/scan）
+    local project_scan_dir="${REPORT_DIR}/${safe_project_name}/scan"
     mkdir -p "$project_scan_dir"
     
     # 生成带时间戳的扫描结果文件名
     local timestamp=$(date '+%Y%m%d-%H%M%S')
-    local scan_result="${project_scan_dir}/${project_name}-scan-${timestamp}.json"
+    local scan_result="${project_scan_dir}/scan-${timestamp}.json"
     
     # 创建临时日志文件
     local scan_log="${LOG_FILE}.scan-${project_name}.tmp"
@@ -343,9 +352,11 @@ run_benchmark() {
         
         # 3. 对比基线
         local baseline_file="${project_dir}baseline.json"
-        local project_comparison_dir="${REPORT_DIR}/${project_name}-comparisons"
+        local safe_project_name=$(sanitize_project_name "$project_name")
+        local project_comparison_dir="${REPORT_DIR}/${safe_project_name}/comparison"
         mkdir -p "$project_comparison_dir"
-        local comparison_report="${project_comparison_dir}/${project_name}-comparison-$(date '+%Y%m%d-%H%M%S').json"
+        # 报告文件名以 comparison- 开头，便于 report_viewer.yak 识别
+        local comparison_report="${project_comparison_dir}/comparison-$(date '+%Y%m%d-%H%M%S').json"
         local compare_script="${WORK_DIR}/${APP_PATH}/baseline_compare.yak"
         
         log_info "Comparing with baseline for $project_name..."

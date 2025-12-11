@@ -320,7 +320,7 @@
                                     <span style="color: #ef4444;">${report.failed_comparisons || 0}</span>
                                 </td>
                                 <td style="text-align: center;">
-                                    <button onclick="viewReport('${report.filename}')" class="btn btn-primary" style="padding: 6px 12px; font-size: 12px;">查看详情</button>
+                                    <button onclick="viewReport('${report.relative_path || report.filename}')" class="btn btn-primary" style="padding: 6px 12px; font-size: 12px;">查看详情</button>
                                 </td>
                             </tr>
                         `;
@@ -343,7 +343,7 @@
             content.innerHTML = '<div class="loading"><p>加载报告详情中...</p></div>';
             modal.style.display = 'block';
 
-            fetch(`/api/report?filename=${encodeURIComponent(filename)}`)
+            fetch(`/api/report?path=${encodeURIComponent(filename)}`)
                 .then(response => response.json())
                 .then(data => {
                     if (!data.success) {

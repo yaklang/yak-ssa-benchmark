@@ -166,9 +166,17 @@ reportsListHandle = func(rsp, req) {
             }
         }
 
+        // 计算相对于 reportDir 的相对路径
+        relativePath = filepath
+        if str.HasPrefix(filepath, reportDir) {
+            relativePath = str.TrimPrefix(filepath, reportDir)
+            relativePath = str.TrimPrefix(relativePath, "/")
+        }
+
         reportInfo = {
             "filename": filename,
             "filepath": filepath,
+            "relative_path": relativePath,  // 相对于 reportDir 的路径，用于 API 请求
             "modTime": modTime,
             "size": fileSize,
             "report_type": reportType,
@@ -211,19 +219,33 @@ reportDetailHandle = func(rsp, req) {
     rsp.Header().Set("Content-Type", "application/json; charset=utf-8")
     rsp.Header().Set("Access-Control-Allow-Origin", "*")
 
-    // 获取文件名参数
-    filename = req.URL.Query().Get("filename")
-    if filename == "" {
+    // 获取文件路径参数（支持相对路径，如 dvwa/comparison/comparison-xxx.json）
+    filePath = req.URL.Query().Get("path")
+    // 向后兼容：如果没有 path 参数，尝试使用 filename 参数
+    if filePath == "" {
+        filePath = req.URL.Query().Get("filename")
+    }
+    if filePath == "" {
         rsp.WriteHeader(400)
         rsp.Write(json.dumps({
             "success": false,
-            "message": "Missing filename parameter"
+            "message": "Missing path or filename parameter"
+        }))
+        return
+    }
+
+    // 安全检查：防止路径遍历攻击
+    if str.Contains(filePath, "..") {
+        rsp.WriteHeader(400)
+        rsp.Write(json.dumps({
+            "success": false,
+            "message": "Invalid path: path traversal not allowed"
         }))
         return
     }
 
     // 读取报告文件
-    filepath = sprintf("%s/%s", reportDir, filename)
+    filepath = sprintf("%s/%s", reportDir, filePath)
     content, readErr = file.ReadFile(filepath)
     if readErr != nil && readErr != undefined {
         yakit.Error("Failed to read report file %s: %v", filepath, readErr)
