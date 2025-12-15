@@ -26,7 +26,7 @@ CONFIGS_DIR="${WORK_DIR}/${APP_PATH}/configs"
 REPORT_DIR=/root/ssa-benchmark-reports
 
 # 基线版本 - 用于生成初始基线文件
-BASELINE_YAK_VERSION="1.4.4-beta18"
+BASELINE_YAK_VERSION="1.4.5-beta1"
 
 # 引擎版本信息
 VERSION_URL="https://yaklang.oss-accelerate.aliyuncs.com/yak/latest/version.txt"
