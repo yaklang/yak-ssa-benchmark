@@ -529,13 +529,17 @@ main() {
         exit 0
     fi
     
-    # 更新配置中的版本和引擎路径
-    update_config "current_version" "$latest_version"
+    # 注意：不要在这里更新版本配置！
+    # 只有在基准测试成功完成后才更新版本，避免中断后无法重试
     update_config "engine_path" "$engine_path"
     
     # 执行基准测试
     if run_benchmark "$engine_path" "$latest_version"; then
         log_info "Benchmark completed successfully"
+        
+        # 只有在基准测试成功后才更新版本配置
+        # 这样如果测试被中断，下次运行时会重新执行
+        update_config "current_version" "$latest_version"
         
         # 清理旧引擎
         cleanup_old_engines
@@ -551,7 +555,7 @@ main() {
         log_info "SSA Benchmark Auto Runner Completed with Errors"
         log_info "=========================================="
         # 不要 exit 1，让 systemd 认为服务正常结束
-        # 下次定时器触发时会重试
+        # 不更新 current_version，下次定时器触发时会重试
         exit 0
     fi
 }

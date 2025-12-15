@@ -314,12 +314,21 @@ jobs:
           ./yak ssh -H "$SSH_HOST" -i /tmp/deploy_pri --command "systemctl stop ssa-benchmark-auto-runner.timer || true"
           ./yak ssh -H "$SSH_HOST" -i /tmp/deploy_pri --command "systemctl stop ssa-benchmark-auto-runner.service || true"
           
-          # 5. 启用并启动 timer
+          # 5. 清除版本配置，确保部署后重新运行测试
+          # 这是为了解决：如果之前的测试被中断，但版本已写入配置，下次运行会跳过测试
+          echo "Clearing version config to force re-run..."
+          ./yak ssh -H "$SSH_HOST" -i /tmp/deploy_pri --command "if [ -f /root/yak-ssa-benchmark/ssa-benchmark-service/config.json ]; then sed -i 's/^current_version=.*/current_version=/' /root/yak-ssa-benchmark/ssa-benchmark-service/config.json && echo 'Version config cleared'; else echo 'Config file not found, will be created on first run'; fi"
+          
+          # 6. 启用并启动 timer
           echo "Enabling and starting timer..."
           ./yak ssh -H "$SSH_HOST" -i /tmp/deploy_pri --command "systemctl enable ssa-benchmark-auto-runner.timer"
           ./yak ssh -H "$SSH_HOST" -i /tmp/deploy_pri --command "systemctl start ssa-benchmark-auto-runner.timer"
           
-          # 6. 验证服务状态
+          # 7. 立即触发一次执行（因为部署后应该重新运行测试）
+          echo "Triggering immediate execution..."
+          ./yak ssh -H "$SSH_HOST" -i /tmp/deploy_pri --command "systemctl start ssa-benchmark-auto-runner.service"
+          
+          # 8. 验证服务状态
           echo ""
           echo "Checking timer status..."
           ./yak ssh -H "$SSH_HOST" -i /tmp/deploy_pri --command "systemctl status ssa-benchmark-auto-runner.timer --no-pager || true"
