@@ -15,6 +15,7 @@ ENGINE_DIR="${SERVICE_DIR}/yak-engine"
 LOG_FILE="${SERVICE_DIR}/auto-benchmark.log"
 LOCK_FILE="${SERVICE_DIR}/benchmark.lock"
 CONFIG_FILE="${SERVICE_DIR}/config.json"
+FAILURE_LOG_DIR="${SERVICE_DIR}/failure-logs"
 
 # 工作目录
 WORK_DIR=/root/yak-ssa-benchmark
@@ -41,30 +42,37 @@ sanitize_project_name() {
 }
 
 # ============= 日志函数 =============
+# 只写入文件日志（静默模式，不输出到 journalctl）
+log_file() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] $*" >> "$LOG_FILE"
+}
+
+# 输出到 journalctl 和文件（重要信息）
 log_info() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] $*" | tee -a "$LOG_FILE" >&2
 }
 
+# 错误信息，输出到 journalctl 和文件
 log_error() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $*" | tee -a "$LOG_FILE" >&2
 }
 
+# 警告信息，输出到 journalctl 和文件
 log_warn() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [WARN] $*" | tee -a "$LOG_FILE" >&2
 }
 
 # ============= 初始化 =============
 init_service() {
-    log_info "Initializing service directories..."
-    
-    # 创建必要的目录
+    # 创建必要的目录（静默）
     mkdir -p "$SERVICE_DIR"
     mkdir -p "$ENGINE_DIR"
     mkdir -p "$REPORT_DIR"
+    mkdir -p "$FAILURE_LOG_DIR"
     
     # 如果配置文件不存在，创建初始配置
     if [ ! -f "$CONFIG_FILE" ]; then
-        log_info "Creating initial config file..."
+        log_file "Creating initial config file..."
         cat > "$CONFIG_FILE" <<EOF
 # SSA Benchmark Auto Runner Configuration
 # Last updated: $(date '+%Y-%m-%d %H:%M:%S')
@@ -79,7 +87,7 @@ last_run_error=
 EOF
     fi
     
-    log_info "Service directories initialized"
+    log_file "Service directories initialized"
 }
 
 # ============= 配置文件操作 =============
@@ -129,16 +137,28 @@ update_config_bool() {
 
 # ============= 版本检查 =============
 get_latest_version() {
-    log_info "Fetching latest engine version from $VERSION_URL..."
+    log_file "Fetching latest engine version from $VERSION_URL..."
     
-    local version=$(curl -s --connect-timeout 10 --max-time 30 "$VERSION_URL" | tr -d '[:space:]')
+    local version
+    local curl_exit
     
-    if [ -z "$version" ]; then
-        log_error "Failed to fetch latest version"
+    version=$(curl -s --connect-timeout 10 --max-time 30 "$VERSION_URL" 2>/dev/null)
+    curl_exit=$?
+    
+    if [ $curl_exit -ne 0 ]; then
+        log_error "Failed to fetch latest version: network error (curl exit code: $curl_exit)"
         return 1
     fi
     
-    log_info "Latest version: $version"
+    # 清理空白字符
+    version=$(echo "$version" | tr -d '[:space:]')
+    
+    if [ -z "$version" ]; then
+        log_error "Failed to fetch latest version: empty response from server"
+        return 1
+    fi
+    
+    log_file "Latest version: $version"
     echo "$version"
 }
 
@@ -149,13 +169,13 @@ download_engine() {
     local engine_url="https://yaklang.oss-accelerate.aliyuncs.com/yak/${version}/yak_linux_amd64"
     local engine_path="${ENGINE_DIR}/yak-${version}"
     
-    log_info "Downloading engine version $version..."
-    log_info "URL: $engine_url"
-    log_info "Target: $engine_path"
+    log_file "Downloading engine version $version..."
+    log_file "URL: $engine_url"
+    log_file "Target: $engine_path"
     
     # 如果文件已存在且可执行，跳过下载
     if [ -f "$engine_path" ] && [ -x "$engine_path" ]; then
-        log_info "Engine already exists and is executable: $engine_path"
+        log_file "Engine already exists and is executable: $engine_path"
         echo "$engine_path"
         return 0
     fi
@@ -163,15 +183,15 @@ download_engine() {
     # 下载引擎
     local tmp_file="${engine_path}.tmp"
     if ! curl -L --progress-bar --connect-timeout 30 --max-time 300 \
-         -o "$tmp_file" "$engine_url"; then
-        log_error "Failed to download engine"
+         -o "$tmp_file" "$engine_url" 2>/dev/null; then
+        log_error "Failed to download engine $version: network error"
         rm -f "$tmp_file"
         return 1
     fi
     
     # 验证下载的文件
     if [ ! -f "$tmp_file" ] || [ ! -s "$tmp_file" ]; then
-        log_error "Downloaded file is empty or missing"
+        log_error "Failed to download engine $version: file is empty or missing"
         rm -f "$tmp_file"
         return 1
     fi
@@ -184,13 +204,53 @@ download_engine() {
     
     # 验证文件类型
     if ! file "$engine_path" | grep -q "executable"; then
-        log_error "Downloaded file is not a valid executable"
+        log_error "Failed to download engine $version: not a valid executable"
         rm -f "$engine_path"
         return 1
     fi
     
-    log_info "Engine downloaded successfully: $engine_path"
+    log_file "Engine downloaded successfully: $engine_path"
     echo "$engine_path"
+}
+
+# ============= 保存扫描失败日志 =============
+save_scan_failure_log() {
+    local project_name="$1"
+    local version="$2"
+    local scan_log="$3"
+    local scan_result="$4"
+    
+    local timestamp=$(date '+%Y%m%d-%H%M%S')
+    local safe_project_name=$(sanitize_project_name "$project_name")
+    local failure_log_file="${FAILURE_LOG_DIR}/${safe_project_name}-${timestamp}.log"
+    
+    # 创建失败日志
+    {
+        echo "=========================================="
+        echo "Scan Failure Report"
+        echo "=========================================="
+        echo "Project: $project_name"
+        echo "Engine Version: $version"
+        echo "Time: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "=========================================="
+        echo ""
+        echo "=== Scan Output ==="
+        if [ -f "$scan_log" ]; then
+            cat "$scan_log"
+        else
+            echo "(No scan log available)"
+        fi
+        echo ""
+        echo "=========================================="
+    } > "$failure_log_file"
+    
+    log_info "Scan failure log saved: $failure_log_file"
+    
+    # 删除空的或失败的 scan 结果文件
+    if [ -n "$scan_result" ] && [ -f "$scan_result" ]; then
+        rm -f "$scan_result"
+        log_file "Removed failed scan result file: $scan_result"
+    fi
 }
 
 # ============= 扫描单个项目 =============
@@ -202,8 +262,8 @@ scan_project() {
     
     local project_name=$(basename "$project_dir")
     local safe_project_name=$(sanitize_project_name "$project_name")
-    log_info "Scanning project: $project_name (safe name: $safe_project_name)"
-    log_info "Config: $config_file"
+    log_file "Scanning project: $project_name (safe name: $safe_project_name)"
+    log_file "Config: $config_file"
     
     # 创建项目专属的扫描结果目录（使用新结构：project_name/scan）
     local project_scan_dir="${REPORT_DIR}/${safe_project_name}/scan"
@@ -214,10 +274,10 @@ scan_project() {
     local scan_result="${project_scan_dir}/scan-${timestamp}.json"
     
     # 创建临时日志文件
-    local scan_log="${LOG_FILE}.scan-${project_name}.tmp"
+    local scan_log="${SERVICE_DIR}/scan-${safe_project_name}-${timestamp}.tmp.log"
     
     # 执行扫描
-    log_info "Executing scan for $project_name with engine $version..."
+    log_file "Executing scan for $project_name with engine $version..."
     cd "$WORK_DIR" || return 1
     
     # 使用CLI参数指定输出路径
@@ -226,19 +286,31 @@ scan_project() {
         > "$scan_log" 2>&1
     
     local scan_exit=$?
+    
+    # 将扫描日志追加到主日志文件
     cat "$scan_log" >> "$LOG_FILE"
-    rm -f "$scan_log"
     
     if [ $scan_exit -ne 0 ]; then
         log_error "Scan failed for $project_name (exit code: $scan_exit)"
+        # 保存失败日志并清理空的 scan 文件
+        save_scan_failure_log "$project_name" "$version" "$scan_log" "$scan_result"
+        rm -f "$scan_log"
         return 1
     fi
     
-    log_info "Scan completed for $project_name, result: $scan_result"
+    rm -f "$scan_log"
     
-    # 检查扫描结果文件是否存在
+    log_file "Scan completed for $project_name, result: $scan_result"
+    
+    # 检查扫描结果文件是否存在且非空
     if [ ! -f "$scan_result" ]; then
         log_error "Scan result file not found: $scan_result"
+        return 1
+    fi
+    
+    if [ ! -s "$scan_result" ]; then
+        log_error "Scan result file is empty: $scan_result"
+        rm -f "$scan_result"
         return 1
     fi
     
@@ -254,11 +326,11 @@ ensure_baseline() {
     
     # 如果基线文件已存在，直接返回
     if [ -f "$baseline_file" ]; then
-        log_info "Baseline file exists for $project_name: $baseline_file"
+        log_file "Baseline file exists for $project_name: $baseline_file"
         return 0
     fi
     
-    log_info "No baseline found for $project_name, generating with version $BASELINE_YAK_VERSION..."
+    log_file "No baseline found for $project_name, generating with version $BASELINE_YAK_VERSION..."
     
     # 下载基线版本引擎
     local baseline_engine=$(download_engine "$BASELINE_YAK_VERSION")
@@ -281,7 +353,11 @@ ensure_baseline() {
     fi
     
     cp "$baseline_scan_result" "$baseline_file"
-    log_info "Baseline file generated for $project_name: $baseline_file"
+    log_file "Baseline file generated for $project_name: $baseline_file"
+    
+    # 删除用于生成基线的 scan 文件，因为它只是基线的来源，不应该保留在 scan 目录中
+    rm -f "$baseline_scan_result"
+    log_file "Removed baseline scan file: $baseline_scan_result"
     
     return 0
 }
@@ -291,12 +367,12 @@ run_benchmark() {
     local engine_path="$1"
     local version="$2"
     
-    log_info "=========================================="
-    log_info "Starting benchmark test with engine $version"
-    log_info "Engine: $engine_path"
-    log_info "Configs Dir: $CONFIGS_DIR"
-    log_info "Report Dir: $REPORT_DIR"
-    log_info "=========================================="
+    log_file "=========================================="
+    log_file "Starting benchmark test with engine $version"
+    log_file "Engine: $engine_path"
+    log_file "Configs Dir: $CONFIGS_DIR"
+    log_file "Report Dir: $REPORT_DIR"
+    log_file "=========================================="
     
     # 检查配置目录
     if [ ! -d "$CONFIGS_DIR" ]; then
@@ -305,7 +381,7 @@ run_benchmark() {
     fi
     
     local start_time=$(date '+%Y-%m-%d %H:%M:%S')
-    log_info "Test started at: $start_time"
+    log_file "Test started at: $start_time"
     
     # 统计变量
     local total_projects=0
@@ -323,15 +399,15 @@ run_benchmark() {
         
         # 检查config.json是否存在
         if [ ! -f "$config_file" ]; then
-            log_warn "Config file not found for $project_name, skipping: $config_file"
+            log_file "Config file not found for $project_name, skipping: $config_file"
             continue
         fi
         
         total_projects=$((total_projects + 1))
         
-        log_info "------------------------------------------"
-        log_info "Processing project $total_projects: $project_name"
-        log_info "------------------------------------------"
+        log_file "------------------------------------------"
+        log_file "Processing project $total_projects: $project_name"
+        log_file "------------------------------------------"
         
         # 1. 确保基线文件存在
         if ! ensure_baseline "$project_dir" "$config_file"; then
@@ -344,7 +420,7 @@ run_benchmark() {
         # 2. 使用最新版本扫描项目
         local scan_result=$(scan_project "$engine_path" "$version" "$project_dir" "$config_file")
         if [ $? -ne 0 ] || [ -z "$scan_result" ]; then
-            log_error "Failed to scan $project_name"
+            # scan_project 内部已经处理了失败日志和清理
             failed_projects=$((failed_projects + 1))
             projects_with_issues+=("$project_name (scan failed)")
             continue
@@ -359,8 +435,8 @@ run_benchmark() {
         local comparison_report="${project_comparison_dir}/comparison-$(date '+%Y%m%d-%H%M%S').json"
         local compare_script="${WORK_DIR}/${APP_PATH}/baseline_compare.yak"
         
-        log_info "Comparing with baseline for $project_name..."
-        local compare_log="${LOG_FILE}.compare-${project_name}.tmp"
+        log_file "Comparing with baseline for $project_name..."
+        local compare_log="${SERVICE_DIR}/compare-${safe_project_name}.tmp.log"
         
         "$engine_path" "$compare_script" \
             --baseline "$baseline_file" \
@@ -374,10 +450,10 @@ run_benchmark() {
         rm -f "$compare_log"
         
         if [ $compare_exit -eq 0 ]; then
-            log_info "✓ $project_name: Baseline comparison PASSED"
+            log_file "✓ $project_name: Baseline comparison PASSED"
             successful_projects=$((successful_projects + 1))
         else
-            log_warn "✗ $project_name: Baseline comparison FAILED"
+            log_file "✗ $project_name: Baseline comparison FAILED"
             failed_projects=$((failed_projects + 1))
             projects_with_issues+=("$project_name (baseline mismatch)")
         fi
@@ -385,19 +461,19 @@ run_benchmark() {
     
     local end_time=$(date '+%Y-%m-%d %H:%M:%S')
     
-    # 输出汇总
-    log_info "=========================================="
-    log_info "Benchmark Summary"
-    log_info "=========================================="
-    log_info "Test Duration: $start_time -> $end_time"
-    log_info "Total Projects: $total_projects"
-    log_info "Successful: $successful_projects"
-    log_info "Failed: $failed_projects"
+    # 输出汇总到文件
+    log_file "=========================================="
+    log_file "Benchmark Summary"
+    log_file "=========================================="
+    log_file "Test Duration: $start_time -> $end_time"
+    log_file "Total Projects: $total_projects"
+    log_file "Successful: $successful_projects"
+    log_file "Failed: $failed_projects"
     
     if [ ${#projects_with_issues[@]} -gt 0 ]; then
-        log_warn "Projects with issues:"
+        log_file "Projects with issues:"
         for issue in "${projects_with_issues[@]}"; do
-            log_warn "  - $issue"
+            log_file "  - $issue"
         done
     fi
     
@@ -407,9 +483,6 @@ run_benchmark() {
     if [ $failed_projects -eq 0 ]; then
         update_config_bool "last_run_success" "true"
         update_config "last_run_error" ""
-        log_info "=========================================="
-        log_info "All projects passed!"
-        log_info "=========================================="
         
         local total_runs=$(read_config "total_runs")
         if [ -z "$total_runs" ]; then
@@ -422,16 +495,13 @@ run_benchmark() {
     else
         update_config_bool "last_run_success" "false"
         update_config "last_run_error" "$failed_projects/$total_projects projects failed"
-        log_error "=========================================="
-        log_error "$failed_projects projects failed!"
-        log_error "=========================================="
         return 1
     fi
 }
 
 # ============= 清理旧引擎 =============
 cleanup_old_engines() {
-    log_info "Cleaning up old engine versions..."
+    log_file "Cleaning up old engine versions..."
     
     # 保留最新的 3 个版本
     local keep_count=3
@@ -439,17 +509,31 @@ cleanup_old_engines() {
     local engine_count=${#engines[@]}
     
     if [ "$engine_count" -le "$keep_count" ]; then
-        log_info "No old engines to clean up (total: $engine_count)"
+        log_file "No old engines to clean up (total: $engine_count)"
         return
     fi
     
-    log_info "Found $engine_count engine versions, keeping latest $keep_count"
+    log_file "Found $engine_count engine versions, keeping latest $keep_count"
     
     for ((i=$keep_count; i<$engine_count; i++)); do
         local engine_to_remove="${engines[$i]}"
-        log_info "Removing old engine: $engine_to_remove"
+        log_file "Removing old engine: $engine_to_remove"
         rm -f "$engine_to_remove"
     done
+}
+
+# ============= 清理旧的失败日志 =============
+cleanup_old_failure_logs() {
+    # 保留最近 30 天的失败日志
+    local keep_days=30
+    
+    if [ -d "$FAILURE_LOG_DIR" ]; then
+        local old_logs=$(find "$FAILURE_LOG_DIR" -name "*.log" -mtime +$keep_days 2>/dev/null)
+        if [ -n "$old_logs" ]; then
+            log_file "Cleaning up failure logs older than $keep_days days..."
+            echo "$old_logs" | xargs rm -f 2>/dev/null
+        fi
+    fi
 }
 
 # ============= 主逻辑 =============
@@ -458,10 +542,7 @@ main() {
     mkdir -p "$SERVICE_DIR"
     mkdir -p "$ENGINE_DIR"
     mkdir -p "$REPORT_DIR"
-    
-    log_info "=========================================="
-    log_info "SSA Benchmark Auto Runner Started"
-    log_info "=========================================="
+    mkdir -p "$FAILURE_LOG_DIR"
     
     # 检查锁文件，避免重复执行
     if [ -f "$LOCK_FILE" ]; then
@@ -470,7 +551,7 @@ main() {
             log_warn "Another instance is running (PID: $lock_pid), exiting"
             exit 0
         else
-            log_warn "Stale lock file found, removing"
+            log_file "Stale lock file found, removing"
             rm -f "$LOCK_FILE"
         fi
     fi
@@ -481,7 +562,7 @@ main() {
     # 确保退出时删除锁文件
     trap "rm -f '$LOCK_FILE'" EXIT
     
-    # 初始化服务
+    # 初始化服务（静默）
     init_service
     
     # 更新检查时间
@@ -489,42 +570,41 @@ main() {
     
     # 获取当前配置的版本
     local current_version=$(read_config "current_version")
-    log_info "Current engine version in config: ${current_version:-'(empty)'}"
+    log_file "Current engine version in config: ${current_version:-'(empty)'}"
     
     # 获取最新版本
     local latest_version=$(get_latest_version)
     if [ -z "$latest_version" ]; then
-        log_error "Failed to get latest version, will retry on next run"
+        # 网络错误已经在 get_latest_version 中输出到 journalctl
         update_config "last_run_error" "Failed to fetch latest version"
         exit 0
     fi
     
     # 判断是否需要更新
+    local need_update=false
     if [ -z "$current_version" ]; then
-        log_info "No version configured, will download latest version"
+        log_file "No version configured, will download latest version"
         need_update=true
     elif [ "$current_version" != "$latest_version" ]; then
-        log_info "Version mismatch: current=$current_version, latest=$latest_version"
-        log_info "Will download and test new version"
+        log_file "Version mismatch: current=$current_version, latest=$latest_version"
         need_update=true
     else
-        log_info "Version is up to date: $current_version"
-        log_info "No update needed, exiting"
-        need_update=false
+        # 版本相同，静默退出（只写文件日志）
+        log_file "Version check OK: $current_version (up to date)"
+        exit 0
     fi
     
-    # 如果不需要更新，退出
-    if [ "$need_update" = "false" ]; then
-        log_info "=========================================="
-        log_info "No update required, exiting"
-        log_info "=========================================="
-        exit 0
+    # 有新版本，输出到 journalctl
+    if [ -z "$current_version" ]; then
+        log_info "New version detected: $latest_version (first run)"
+    else
+        log_info "New version detected: $latest_version (current: $current_version)"
     fi
     
     # 下载引擎
     local engine_path=$(download_engine "$latest_version")
     if [ $? -ne 0 ] || [ -z "$engine_path" ]; then
-        log_error "Failed to download engine, will retry on next run"
+        # 下载错误已经在 download_engine 中输出到 journalctl
         update_config "last_run_error" "Failed to download engine version $latest_version"
         exit 0
     fi
@@ -533,27 +613,27 @@ main() {
     # 只有在基准测试成功完成后才更新版本，避免中断后无法重试
     update_config "engine_path" "$engine_path"
     
+    log_info "Starting benchmark with engine $latest_version..."
+    
     # 执行基准测试
     if run_benchmark "$engine_path" "$latest_version"; then
-        log_info "Benchmark completed successfully"
-        
         # 只有在基准测试成功后才更新版本配置
         # 这样如果测试被中断，下次运行时会重新执行
         update_config "current_version" "$latest_version"
         
-        # 清理旧引擎
+        # 清理旧引擎和旧失败日志
         cleanup_old_engines
+        cleanup_old_failure_logs
         
-        log_info "=========================================="
-        log_info "SSA Benchmark Auto Runner Completed Successfully"
-        log_info "=========================================="
+        # 获取统计信息
+        local total_runs=$(read_config "total_runs")
+        log_info "Benchmark completed: all projects passed (total runs: $total_runs)"
         exit 0
     else
-        log_error "Benchmark failed, but will retry on next run"
-        log_error "Check log file for details: $LOG_FILE"
-        log_info "=========================================="
-        log_info "SSA Benchmark Auto Runner Completed with Errors"
-        log_info "=========================================="
+        # 获取失败信息
+        local last_error=$(read_config "last_run_error")
+        log_error "Benchmark failed: $last_error"
+        log_error "Check failure logs: $FAILURE_LOG_DIR"
         # 不要 exit 1，让 systemd 认为服务正常结束
         # 不更新 current_version，下次定时器触发时会重试
         exit 0
@@ -562,4 +642,3 @@ main() {
 
 # 执行主函数
 main "$@"
-
