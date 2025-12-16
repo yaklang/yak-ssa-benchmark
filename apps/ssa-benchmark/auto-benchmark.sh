@@ -27,7 +27,7 @@ CONFIGS_DIR="${WORK_DIR}/${APP_PATH}/configs"
 REPORT_DIR=/root/ssa-benchmark-reports
 
 # 基线版本 - 用于生成初始基线文件
-BASELINE_YAK_VERSION="1.4.5-beta1"
+BASELINE_YAK_VERSION="1.4.5-beta2"
 
 # 引擎版本信息
 VERSION_URL="https://yaklang.oss-accelerate.aliyuncs.com/yak/latest/version.txt"
@@ -213,7 +213,8 @@ download_engine() {
     echo "$engine_path"
 }
 
-# ============= 保存扫描失败日志 =============
+# ============= 保存失败日志 =============
+# 用于扫描失败
 save_scan_failure_log() {
     local project_name="$1"
     local version="$2"
@@ -222,7 +223,7 @@ save_scan_failure_log() {
     
     local timestamp=$(date '+%Y%m%d-%H%M%S')
     local safe_project_name=$(sanitize_project_name "$project_name")
-    local failure_log_file="${FAILURE_LOG_DIR}/${safe_project_name}-${timestamp}.log"
+    local failure_log_file="${FAILURE_LOG_DIR}/${safe_project_name}-scan-${timestamp}.log"
     
     # 创建失败日志
     {
@@ -232,6 +233,7 @@ save_scan_failure_log() {
         echo "Project: $project_name"
         echo "Engine Version: $version"
         echo "Time: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "Failure Type: Scan Failed"
         echo "=========================================="
         echo ""
         echo "=== Scan Output ==="
@@ -244,13 +246,60 @@ save_scan_failure_log() {
         echo "=========================================="
     } > "$failure_log_file"
     
-    log_info "Scan failure log saved: $failure_log_file"
+    log_info "Failure log saved: $failure_log_file"
     
     # 删除空的或失败的 scan 结果文件
     if [ -n "$scan_result" ] && [ -f "$scan_result" ]; then
         rm -f "$scan_result"
         log_file "Removed failed scan result file: $scan_result"
     fi
+}
+
+# 用于对比失败
+save_comparison_failure_log() {
+    local project_name="$1"
+    local version="$2"
+    local compare_log="$3"
+    local baseline_file="$4"
+    local scan_result="$5"
+    local comparison_report="$6"
+    
+    local timestamp=$(date '+%Y%m%d-%H%M%S')
+    local safe_project_name=$(sanitize_project_name "$project_name")
+    local failure_log_file="${FAILURE_LOG_DIR}/${safe_project_name}-compare-${timestamp}.log"
+    
+    # 创建失败日志
+    {
+        echo "=========================================="
+        echo "Comparison Failure Report"
+        echo "=========================================="
+        echo "Project: $project_name"
+        echo "Engine Version: $version"
+        echo "Time: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "Failure Type: Baseline Comparison Failed"
+        echo "Baseline File: $baseline_file"
+        echo "Scan Result: $scan_result"
+        echo "Comparison Report: $comparison_report"
+        echo "=========================================="
+        echo ""
+        echo "=== Comparison Output ==="
+        if [ -f "$compare_log" ]; then
+            cat "$compare_log"
+        else
+            echo "(No comparison log available)"
+        fi
+        echo ""
+        echo "=== Comparison Report Content ==="
+        if [ -f "$comparison_report" ]; then
+            cat "$comparison_report"
+        else
+            echo "(No comparison report available)"
+        fi
+        echo ""
+        echo "=========================================="
+    } > "$failure_log_file"
+    
+    log_info "Failure log saved: $failure_log_file"
 }
 
 # ============= 扫描单个项目 =============
@@ -411,7 +460,7 @@ run_benchmark() {
         
         # 1. 确保基线文件存在
         if ! ensure_baseline "$project_dir" "$config_file"; then
-            log_error "Failed to ensure baseline for $project_name"
+            # ensure_baseline 内部已经记录了详细错误和失败日志
             failed_projects=$((failed_projects + 1))
             projects_with_issues+=("$project_name (baseline generation failed)")
             continue
@@ -436,7 +485,7 @@ run_benchmark() {
         local compare_script="${WORK_DIR}/${APP_PATH}/baseline_compare.yak"
         
         log_file "Comparing with baseline for $project_name..."
-        local compare_log="${SERVICE_DIR}/compare-${safe_project_name}.tmp.log"
+        local compare_log="${SERVICE_DIR}/compare-${safe_project_name}-$(date '+%Y%m%d-%H%M%S').tmp.log"
         
         "$engine_path" "$compare_script" \
             --baseline "$baseline_file" \
@@ -447,13 +496,16 @@ run_benchmark() {
         
         local compare_exit=$?
         cat "$compare_log" >> "$LOG_FILE"
-        rm -f "$compare_log"
         
         if [ $compare_exit -eq 0 ]; then
             log_file "✓ $project_name: Baseline comparison PASSED"
             successful_projects=$((successful_projects + 1))
+            rm -f "$compare_log"
         else
-            log_file "✗ $project_name: Baseline comparison FAILED"
+            log_error "✗ $project_name: Baseline comparison FAILED (exit code: $compare_exit)"
+            # 保存对比失败日志
+            save_comparison_failure_log "$project_name" "$version" "$compare_log" "$baseline_file" "$scan_result" "$comparison_report"
+            rm -f "$compare_log"
             failed_projects=$((failed_projects + 1))
             projects_with_issues+=("$project_name (baseline mismatch)")
         fi
