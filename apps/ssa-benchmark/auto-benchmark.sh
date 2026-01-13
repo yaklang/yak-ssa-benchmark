@@ -27,7 +27,10 @@ CONFIGS_DIR="${WORK_DIR}/${APP_PATH}/configs"
 REPORT_DIR=/root/ssa-benchmark-reports
 
 # 基线版本 - 用于生成初始基线文件
-BASELINE_YAK_VERSION="1.4.5-beta2"
+BASELINE_YAK_VERSION="1.4.5-beta5"
+
+# 最大重试次数 - 失败后允许重试的最大次数
+MAX_RETRY_COUNT=1
 
 # 引擎版本信息
 VERSION_URL="https://yaklang.oss-accelerate.aliyuncs.com/yak/latest/version.txt"
@@ -84,6 +87,8 @@ engine_path=
 total_runs=0
 last_run_success=false
 last_run_error=
+retry_count=0
+failed_version=
 EOF
     fi
     
@@ -632,14 +637,35 @@ main() {
         exit 0
     fi
     
+    # 获取重试计数和失败版本
+    local retry_count=$(read_config "retry_count")
+    local failed_version=$(read_config "failed_version")
+    if [ -z "$retry_count" ]; then
+        retry_count=0
+    fi
+    
     # 判断是否需要更新
     local need_update=false
     if [ -z "$current_version" ]; then
         log_file "No version configured, will download latest version"
         need_update=true
     elif [ "$current_version" != "$latest_version" ]; then
-        log_file "Version mismatch: current=$current_version, latest=$latest_version"
-        need_update=true
+        # 检查是否是之前失败过的版本
+        if [ "$failed_version" = "$latest_version" ]; then
+            log_file "Version $latest_version previously failed (retry count: $retry_count)"
+            if [ "$retry_count" -ge "$MAX_RETRY_COUNT" ]; then
+                log_warn "Version $latest_version has reached max retry count ($MAX_RETRY_COUNT), skipping until next version"
+                log_warn "Current version remains: $current_version"
+                exit 0
+            else
+                log_file "Retry count ($retry_count) within limit ($MAX_RETRY_COUNT), will retry"
+                need_update=true
+            fi
+        else
+            # 新版本，重置重试计数
+            log_file "Version mismatch: current=$current_version, latest=$latest_version"
+            need_update=true
+        fi
     else
         # 版本相同，静默退出（只写文件日志）
         log_file "Version check OK: $current_version (up to date)"
@@ -673,6 +699,10 @@ main() {
         # 这样如果测试被中断，下次运行时会重新执行
         update_config "current_version" "$latest_version"
         
+        # 重置重试计数和失败版本记录
+        update_config_number "retry_count" "0"
+        update_config "failed_version" ""
+        
         # 清理旧引擎和旧失败日志
         cleanup_old_engines
         cleanup_old_failure_logs
@@ -686,8 +716,26 @@ main() {
         local last_error=$(read_config "last_run_error")
         log_error "Benchmark failed: $last_error"
         log_error "Check failure logs: $FAILURE_LOG_DIR"
+        
+        # 更新失败版本和重试计数
+        if [ "$failed_version" != "$latest_version" ]; then
+            # 新版本失败，重置重试计数
+            update_config "failed_version" "$latest_version"
+            update_config_number "retry_count" "1"
+            log_warn "Version $latest_version failed (attempt 1/$MAX_RETRY_COUNT)"
+        else
+            # 同一版本重试失败，增加计数
+            retry_count=$((retry_count + 1))
+            update_config_number "retry_count" "$retry_count"
+            log_warn "Version $latest_version failed (attempt $retry_count/$MAX_RETRY_COUNT)"
+            
+            if [ "$retry_count" -ge "$MAX_RETRY_COUNT" ]; then
+                log_error "Version $latest_version has reached max retry count, will skip until next version"
+            fi
+        fi
+        
         # 不要 exit 1，让 systemd 认为服务正常结束
-        # 不更新 current_version，下次定时器触发时会重试
+        # 不更新 current_version，下次定时器触发时会根据重试计数决定是否重试
         exit 0
     fi
 }
