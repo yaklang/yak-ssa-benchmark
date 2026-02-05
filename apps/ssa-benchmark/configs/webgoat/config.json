@@ -1,0 +1,21 @@
+{
+  "Mode": 127,
+  "BaseInfo": {
+    "program_names": ["WebGoat"],
+    "language": "java"
+  },
+  "CodeSource": {
+    "kind": "git",
+    "url": "https://github.com/WebGoat/WebGoat",
+    "branch": "v2025.3"
+  },
+  "SSACompile": {
+    "memory_compile": true
+  },
+  "SyntaxFlow": {
+    "memory": true
+  },
+  "Output": {
+    "output_format": "irify"
+  }
+}
